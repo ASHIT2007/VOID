@@ -1,0 +1,29 @@
+services:
+  void:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      BACKEND_PORT: "3001"
+      BACKEND_URL: http://127.0.0.1:3001
+      FRONTEND_URL: http://127.0.0.1:3000
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set a 64-character hex ENCRYPTION_KEY in .env}
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - backend-data:/app/backend/server/data
+      - generated-images:/app/data
+      - generated-posters:/app/frontend/public/generated_posters
+volumes:
+  backend-data:
+  generated-images:
+  generated-posters:

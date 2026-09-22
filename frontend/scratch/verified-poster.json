@@ -1,0 +1,79 @@
+{
+  "title": "World War II: A Global Conflict (1939–1945)",
+  "format": "poster",
+  "designPlan": {
+    "subject": "World War II overview",
+    "audience": "Students and history enthusiasts",
+    "purpose": "Provide a concise educational summary of the war's timeline and key facts.",
+    "tone": "Educational and objective",
+    "keyMessage": "World War II was a transformative global conflict that reshaped the modern world order.",
+    "readingDirection": "top-to-bottom",
+    "style": "historical",
+    "density": "balanced",
+    "imageStrategy": "none",
+    "recurringMotif": "minimalist lines",
+    "palette": {
+      "background": "#F4F1EA",
+      "surface": "#FFFFFF",
+      "text": "#2D2926",
+      "muted": "#7A756F",
+      "primary": "#8B4513",
+      "secondary": "#556B2F",
+      "accent": "#A52A2A"
+    }
+  },
+  "slides": [
+    {
+      "id": "poster-content",
+      "slideNumber": 1,
+      "layout": "poster",
+      "title": "The Global Conflict",
+      "subtitle": "A summary of the most widespread war in human history",
+      "visualRole": "timeline",
+      "content": {
+        "bodyText": "World War II involved the vast majority of the world's countries and every great power, forming two opposing military alliances: the Allies and the Axis. It was the deadliest conflict in history, resulting in an estimated 70 to 85 million fatalities.",
+        "timeline": [
+          {
+            "step": "1939",
+            "title": "Invasion of Poland",
+            "description": "Germany invades Poland, prompting Britain and France to declare war."
+          },
+          {
+            "step": "1941",
+            "title": "Global Escalation",
+            "description": "Germany invades the Soviet Union; Japan attacks Pearl Harbor, bringing the US into the war."
+          },
+          {
+            "step": "1942-43",
+            "title": "Turning Points",
+            "description": "Allied victories at Stalingrad, Midway, and El Alamein shift the momentum."
+          },
+          {
+            "step": "1944",
+            "title": "D-Day",
+            "description": "Allied forces land in Normandy, beginning the liberation of Western Europe."
+          },
+          {
+            "step": "1945",
+            "title": "Victory",
+            "description": "Germany surrenders in May; Japan surrenders in September following atomic bombings."
+          }
+        ],
+        "bullets": [
+          "Axis Powers: Germany, Italy, and Japan.",
+          "Allied Powers: Great Britain, Soviet Union, United States, and China.",
+          "The war led to the creation of the United Nations to foster international cooperation.",
+          "The aftermath saw the emergence of the United States and the Soviet Union as global superpowers."
+        ],
+        "takeaway": "The war ended the era of European colonial dominance and set the stage for the Cold War.",
+        "metrics": [],
+        "factCards": [],
+        "process": [],
+        "characterCards": [],
+        "sources": []
+      }
+    }
+  ],
+  "id": "design-1788703228244",
+  "version": 2
+}

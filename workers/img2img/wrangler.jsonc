@@ -1,0 +1,25 @@
+{
+  "name": "img2img-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "e845cd79457b4be6ab204dc22de2bd84"
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "VECTOR_INDEX",
+      "index_name": "void-memory"
+    }
+  ]
+}

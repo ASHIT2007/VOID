@@ -1,0 +1,80 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build outputs
+node_modules/
+.next/
+out/
+build/
+dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Secrets, credentials, and private runtime data
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.db
+*.db-*
+*.sqlite*
+data/
+generated_images/
+generated_posters/
+desktop-agent/email_config.json
+backend/supabase/.temp/
+
+# Dependency backups, build caches, and local tooling
+node_modules*/
+.next*/
+*.tsbuildinfo
+coverage/
+.wrangler/
+.vercel/
+.cache/
+*.bak
+*.backup
+.vscode/
+.idea/
+
+# One-off local experiments and captured responses (not application source)
+/scratch.tsx
+/test*
+/frontend/*.js
+/frontend/test*
+/frontend/models*.json
+/frontend/package-lock.json
+/frontend/models*.txt
+/frontend/restored_route_raw.*
+/frontend/ppy*.txt
+/frontend/scratch.*
+/frontend/scratch/*
+!/frontend/scratch/verified-poster.json
+!/frontend/scratch/verified-presentation.json
+/backend/server/test-agent.ts
+/backend/server/src/update_groq_key.ts
+/desktop-agent/patch_tools.py

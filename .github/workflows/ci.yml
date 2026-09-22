@@ -1,0 +1,43 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check:repository
+      - run: npm test
+      - run: npm run build
+      - name: Build deployment image
+        run: docker build -t void:ci .
+      - name: Smoke test deployment image
+        shell: bash
+        run: |
+          export ENCRYPTION_KEY=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
+          docker run -d --name void-smoke -e ENCRYPTION_KEY void:ci
+          trap 'docker rm -f void-smoke >/dev/null' EXIT
+          for attempt in $(seq 1 60); do
+            health=$(docker inspect --format '{{.State.Health.Status}}' void-smoke)
+            if [ "$health" = healthy ]; then exit 0; fi
+            if [ "$health" = unhealthy ]; then echo 'Deployment health check failed'; exit 1; fi
+            sleep 5
+          done
+          echo 'Deployment health check timed out'
+          exit 1

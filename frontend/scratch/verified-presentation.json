@@ -1,0 +1,209 @@
+{
+  "title": "World War II: A Global Conflict (1939‑1945)",
+  "format": "presentation",
+  "designPlan": {
+    "subject": "World War II",
+    "audience": "General public / educational settings",
+    "purpose": "Provide a concise, chronological overview of the war’s major milestones and lasting impact",
+    "tone": "Informative and respectful",
+    "keyMessage": "World War II reshaped the world through a series of decisive events that spanned continents and altered societies forever.",
+    "readingDirection": "left-to-right",
+    "style": "historical",
+    "density": "balanced",
+    "imageStrategy": "Use verified archival photographs that directly illustrate each phase of the conflict",
+    "recurringMotif": "Chronological arrows linking slides",
+    "palette": {
+      "background": "#F5F5F5",
+      "surface": "#FFFFFF",
+      "text": "#212121",
+      "muted": "#757575",
+      "primary": "#0D47A1",
+      "secondary": "#B71C1C",
+      "accent": "#FFB300"
+    }
+  },
+  "slides": [
+    {
+      "id": "slide1",
+      "slideNumber": 1,
+      "layout": "editorial",
+      "title": "World War II: Overview",
+      "visualRole": "none",
+      "content": {
+        "bodyText": "World War II was the deadliest and most widespread conflict in human history, involving over 30 nations across Europe, Asia, Africa, and the Pacific from 1939 to 1945.",
+        "bullets": [
+          "Started: 1 September 1939 – German invasion of Poland",
+          "Ended: 2 September 1945 – Formal Japanese surrender",
+          "Total casualties: estimated 70‑85 million deaths"
+        ],
+        "sources": [
+          "https://en.wikipedia.org/wiki/World_War_II"
+        ],
+        "metrics": [],
+        "factCards": [],
+        "timeline": [],
+        "process": [],
+        "characterCards": [],
+        "takeaway": "Started: 1 September 1939 – German invasion of Poland"
+      }
+    },
+    {
+      "id": "slide2",
+      "slideNumber": 2,
+      "layout": "image-feature",
+      "title": "1939 – The Outbreak: Invasion of Poland",
+      "visualRole": "documentary-image",
+      "imageUrl": "https://upload.wikimedia.org/wikipedia/commons/1/10/Bundesarchiv_Bild_101I-646-5188-17%2C_Flugzeuge_Junkers_Ju_87.jpg?utm_source=en.wikipedia.org&utm_campaign=api&utm_content=thumbnail_unscaled",
+      "content": {
+        "bodyText": "Germany’s blitzkrieg against Poland on 1 September 1939 triggered the European theater of World II, prompting Britain and France to declare war on Germany.",
+        "bullets": [
+          "Rapid armored and air assaults overwhelmed Polish defenses",
+          "Marked the first use of coordinated tank‑air tactics (blitzkrieg)",
+          "Set the stage for subsequent invasions of Denmark, Norway, France, and the Low Countries"
+        ],
+        "sources": [
+          "https://en.wikipedia.org/wiki/World_War_II",
+          "https://upload.wikimedia.org/wikipedia/commons/1/10/Bundesarchiv_Bild_101I-646-5188-17%2C_Flugzeuge_Junkers_Ju_87.jpg"
+        ],
+        "metrics": [],
+        "factCards": [],
+        "timeline": [],
+        "process": [],
+        "characterCards": [],
+        "takeaway": "Rapid armored and air assaults overwhelmed Polish defenses"
+      },
+      "visualCaption": "Wikipedia page image",
+      "imageSource": {
+        "url": "https://upload.wikimedia.org/wikipedia/commons/1/10/Bundesarchiv_Bild_101I-646-5188-17%2C_Flugzeuge_Junkers_Ju_87.jpg?utm_source=en.wikipedia.org&utm_campaign=api&utm_content=thumbnail_unscaled",
+        "title": "World War II",
+        "sourceUrl": "https://en.wikipedia.org/wiki/World_War_II",
+        "sourceDomain": "en.wikipedia.org",
+        "attribution": "Wikipedia page image",
+        "query": "World War II clear overview",
+        "width": 798,
+        "height": 544,
+        "score": 0.9,
+        "verified": true,
+        "alt": "Web image supporting the explanation of World War II",
+        "confidence": 0.98
+      }
+    },
+    {
+      "id": "slide3",
+      "slideNumber": 3,
+      "layout": "image-feature",
+      "title": "1941 – Pearl Harbor & the Pacific Front",
+      "visualRole": "documentary-image",
+      "imageUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/14/Cape_Otway_%28AU%29%2C_Cape_Otway_Lighthouse%2C_World_War_II_Radar_Bunker_--_2019_--_1238.jpg/1920px-Cape_Otway_%28AU%29%2C_Cape_Otway_Lighthouse%2C_World_War_II_Radar_Bunker_--_2019_--_1238.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "content": {
+        "bodyText": "The Japanese attack on Pearl Harbor on 7 December 1941 brought the United States fully into the war, opening a massive Pacific campaign that stretched from Australia to the Japanese home islands.",
+        "bullets": [
+          "Immediate U.S. declaration of war on Japan; Germany and Italy declared war on the U.S. shortly after",
+          "Allied focus on island‑hopping strategy to recapture territory",
+          "Australian radar bunkers, like the one shown, were critical for early warning against Japanese air raids"
+        ],
+        "sources": [
+          "https://en.wikipedia.org/wiki/World_War_II",
+          "https://commons.wikimedia.org/wiki/File:Cape_Otway_(AU),_Cape_Otway_Lighthouse,_World_War_II_Radar_Bunker_--_2019_--_1238.jpg"
+        ],
+        "metrics": [],
+        "factCards": [],
+        "timeline": [],
+        "process": [],
+        "characterCards": [],
+        "takeaway": "Immediate U.S. declaration of war on Japan; Germany and Italy declared war on the U.S. shortly after"
+      },
+      "visualCaption": "Wikimedia Commons",
+      "imageSource": {
+        "url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/14/Cape_Otway_%28AU%29%2C_Cape_Otway_Lighthouse%2C_World_War_II_Radar_Bunker_--_2019_--_1238.jpg/1920px-Cape_Otway_%28AU%29%2C_Cape_Otway_Lighthouse%2C_World_War_II_Radar_Bunker_--_2019_--_1238.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "title": "Cape Otway (AU), Cape Otway Lighthouse, World War II Radar Bunker -- 2019 -- 1238.jpg",
+        "mimeType": "image/jpeg",
+        "sourceUrl": "https://commons.wikimedia.org/wiki/File:Cape_Otway_(AU),_Cape_Otway_Lighthouse,_World_War_II_Radar_Bunker_--_2019_--_1238.jpg",
+        "sourceDomain": "commons.wikimedia.org",
+        "attribution": "Wikimedia Commons",
+        "query": "World War II full view context",
+        "width": 6720,
+        "height": 4480,
+        "score": 0.75,
+        "verified": true,
+        "alt": "Web image supporting the explanation of World War II",
+        "confidence": 0.96
+      }
+    },
+    {
+      "id": "slide4",
+      "slideNumber": 4,
+      "layout": "timeline",
+      "title": "Key Turning Points (1939‑1945)",
+      "visualRole": "timeline",
+      "content": {
+        "timeline": [
+          {
+            "step": "1939‑09‑01",
+            "title": "Invasion of Poland",
+            "description": "Germany’s blitzkrieg begins the European war."
+          },
+          {
+            "step": "1941‑12‑07",
+            "title": "Pearl Harbor",
+            "description": "Japan attacks U.S. Pacific Fleet; U.S. enters the war."
+          },
+          {
+            "step": "1942‑08‑23 – 1943‑02‑02",
+            "title": "Battle of Stalingrad",
+            "description": "Soviet victory halts German advance on the Eastern Front."
+          },
+          {
+            "step": "1944‑06‑06",
+            "title": "D‑Day (Normandy Invasion)",
+            "description": "Allied forces open a Western front in Europe."
+          },
+          {
+            "step": "1945‑08‑06 & 1945‑08‑09",
+            "title": "Atomic Bombings of Hiroshima & Nagasaki",
+            "description": "U.S. drops nuclear weapons, prompting Japan’s surrender."
+          },
+          {
+            "step": "1945‑09‑02",
+            "title": "Formal Japanese Surrender",
+            "description": "World War II officially ends."
+          }
+        ],
+        "sources": [
+          "https://en.wikipedia.org/wiki/World_War_II"
+        ],
+        "bullets": [],
+        "metrics": [],
+        "factCards": [],
+        "process": [],
+        "characterCards": []
+      }
+    },
+    {
+      "id": "slide5",
+      "slideNumber": 5,
+      "layout": "closing",
+      "title": "Legacy & Aftermath",
+      "visualRole": "none",
+      "content": {
+        "bodyText": "The war reshaped geopolitics, technology, and societies worldwide, laying the groundwork for the United Nations, the Cold War, and rapid scientific advancement.",
+        "bullets": [
+          "United Nations founded in 1945 to promote peace",
+          "Emergence of the U.S. and Soviet Union as superpowers",
+          "Accelerated development of jet aircraft, rockets, and nuclear energy"
+        ],
+        "sources": [
+          "https://en.wikipedia.org/wiki/World_War_II"
+        ],
+        "metrics": [],
+        "factCards": [],
+        "timeline": [],
+        "process": [],
+        "characterCards": [],
+        "takeaway": "United Nations founded in 1945 to promote peace"
+      }
+    }
+  ],
+  "id": "design-1788703620778",
+  "version": 2
+}

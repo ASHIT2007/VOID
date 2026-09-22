@@ -1,0 +1,36 @@
+{
+  "name": "chat-ai-student",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=24.13.0 <25",
+    "npm": ">=11 <12"
+  },
+  "workspaces": [
+    "frontend",
+    "frontend/admin-dashboard",
+    "backend/server",
+    "shared",
+    "freellmapi/desktop"
+  ],
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names app,admin \"npm run dev --prefix frontend --workspaces=false\" \"npm run dev -w @freellmapi/client\"",
+    "build": "npm run build --prefix frontend --workspaces=false && npm run build -w @freellmapi/server && npm run build -w @freellmapi/client",
+    "start": "npm run start --prefix frontend --workspaces=false",
+    "start:frontend": "npm run start:next --prefix frontend --workspaces=false",
+    "start:backend": "npm run start --workspace=@freellmapi/server",
+    "test": "npm run test --workspace=@freellmapi/server",
+    "check:repository": "node scripts/check-repository.mjs",
+    "install:all": "npm install"
+  },
+  "overrides": {
+    "@types/three": "0.182.0",
+    "three": "0.182.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.182.0",
+    "concurrently": "^9.1.2",
+    "three": "0.182.0",
+    "wrangler": "^4.129.0"
+  }
+}

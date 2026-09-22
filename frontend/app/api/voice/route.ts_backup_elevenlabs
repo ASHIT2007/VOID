@@ -1,0 +1,155 @@
+import { NextRequest, NextResponse } from "next/server";
+
+// Helper to strip URLs from text to save tokens and prevent reading out loud
+function stripUrls(text: string) {
+  return text.replace(/(https?:\/\/[^\s]+)/g, "");
+}
+
+// GET: Streaming ElevenLabs Audio
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const aiText = searchParams.get("text");
+
+  if (!aiText) {
+    return NextResponse.json({ error: "Missing text" }, { status: 400 });
+  }
+
+  const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
+  if (!elevenLabsKey) {
+    return NextResponse.json({ error: "ELEVENLABS_API_KEY not configured" }, { status: 500 });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+    
+    const ttsRes = await fetch(
+      "https://api.elevenlabs.io/v1/text-to-speech/NOpBlnGInO9m6vDvFkFC/stream",
+      {
+        method: "POST",
+        headers: {
+          "Accept": "audio/mpeg",
+          "xi-api-key": elevenLabsKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: aiText,
+          model_id: "eleven_turbo_v2_5",
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timeout);
+
+    if (ttsRes.ok) {
+      return new NextResponse(ttsRes.body, {
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "Cache-Control": "no-store",
+          "Transfer-Encoding": "chunked"
+        }
+      });
+    } else {
+      const err = await ttsRes.text();
+      console.error("ElevenLabs API Error:", ttsRes.status, err);
+      return NextResponse.json({ error: "TTS failed" }, { status: 502 });
+    }
+  } catch (e) {
+    console.error("ElevenLabs fetch error:", e);
+    return NextResponse.json({ error: "TTS network error" }, { status: 504 });
+  }
+}
+
+// POST: Tavily RAG + Groq LLM Generation
+export async function POST(req: NextRequest) {
+  try {
+    const { text } = await req.json();
+
+    if (!text || !text.trim()) {
+      return NextResponse.json({ error: "Missing text" }, { status: 400 });
+    }
+
+    let systemPrompt = "Your name is Void. You are a highly intelligent, concise, and helpful AI voice assistant. Keep responses SHORT (1-3 sentences max) since they will be spoken aloud. Be natural and conversational. Never read out raw URLs.";
+
+    // ── Step 1: Tavily Search (RAG) ──
+    const tavilyKey = process.env.TAVILY_API_KEY;
+    if (tavilyKey) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000); // Super aggressive 3s timeout for voice
+        
+        const tavilyRes = await fetch("https://api.tavily.com/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            api_key: tavilyKey,
+            query: text,
+            search_depth: "basic",
+            include_answer: false,
+            max_results: 3
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
+
+        if (tavilyRes.ok) {
+          const tavilyData = await tavilyRes.json();
+          if (tavilyData && tavilyData.results && tavilyData.results.length > 0) {
+            const searchContext = tavilyData.results
+              .map((r: any) => stripUrls(r.content))
+              .join("\n\n");
+            systemPrompt = `Your name is Void. You are a concise voice assistant. Use the following real-time web search context to answer the user's query accurately. If the context doesn't contain the answer, rely on your general knowledge. Keep responses SHORT (1-3 sentences max).\n\nContext:\n${searchContext}`;
+          }
+        }
+      } catch (e) {
+        console.warn("Tavily search skipped or timed out:", e);
+        // Fall back gracefully to the original systemPrompt
+      }
+    }
+
+    // ── Step 2: Groq LLM Generation ──
+    const groqKey = process.env.GROQ_API_KEY;
+    if (!groqKey) {
+      return NextResponse.json({ error: "GROQ_API_KEY not configured" }, { status: 500 });
+    }
+
+    const llmRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${groqKey}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: text }
+        ],
+        temperature: 0.7,
+        max_tokens: 200,
+        stream: false
+      })
+    });
+
+    if (!llmRes.ok) {
+      const errBody = await llmRes.text();
+      console.error("Groq API Error:", llmRes.status, errBody);
+      return NextResponse.json({ error: "LLM request failed: " + llmRes.statusText }, { status: 502 });
+    }
+
+    const llmData = await llmRes.json();
+    const aiText = llmData.choices?.[0]?.message?.content;
+    
+    if (!aiText) {
+      return NextResponse.json({ error: "No content from LLM" }, { status: 502 });
+    }
+
+    // Return just the text. The frontend will immediately trigger a GET to /api/voice?text=... to stream the audio natively.
+    return NextResponse.json({ text: aiText });
+
+  } catch (err: any) {
+    console.error("Voice API Error:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}

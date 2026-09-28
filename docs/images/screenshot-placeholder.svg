@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="560" viewBox="0 0 1280 560" role="img" aria-labelledby="title description">
+  <title id="title">Screenshot placeholder</title>
+  <desc id="description">Reserved space for a screenshot of this VOID feature.</desc>
+  <rect x="1" y="1" width="1278" height="558" rx="18" fill="#181818" stroke="#363636" stroke-width="2"/>
+  <rect x="96" y="66" width="1088" height="428" rx="12" fill="none" stroke="#404040" stroke-dasharray="8 10"/>
+  <g fill="none" stroke="#929292" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="612" y="190" width="56" height="42" rx="6"/>
+    <circle cx="630" cy="204" r="4"/>
+    <path d="M618 225l13-12 10 8 9-9 12 13"/>
+  </g>
+  <text x="640" y="284" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" fill="#dedede">Screenshot placeholder</text>
+  <text x="640" y="324" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#969696">Add a capture of this feature here</text>
+</svg>

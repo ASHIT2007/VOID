@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import Image from 'next/image';
-import { ArrowRight, Eye, EyeOff, LoaderCircle, LockKeyhole, Mail, Phone } from 'lucide-react';
+import { ArrowRight, Eye, EyeOff, LoaderCircle, LockKeyhole, Mail, Phone, UserRound } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { sendPhoneCode, verifyPhoneCode } from '@/lib/auth-phone';
 import { normalizeLoginEmail, readLoginAvatar } from '@/lib/login-profile';
 import styles from './AuthScreen.module.css';
+import AuthStarfield from './AuthStarfield';
 
 type AuthMode = 'login' | 'signup' | 'reset' | 'phone';
 type SocialProvider = 'google' | 'github';
@@ -14,6 +15,16 @@ const providers: { id: SocialProvider; label: string }[] = [
   { id: 'google', label: 'Google' },
   { id: 'github', label: 'GitHub' },
 ];
+
+function SpaceBackground() {
+  return (
+    <div className={styles.space} aria-hidden="true">
+      <Image src="/auth/space-background.webp" alt="" fill loading="eager" fetchPriority="high" sizes="100vw" className={styles.spaceImage} />
+      <div className={styles.spaceLight} />
+      <AuthStarfield />
+    </div>
+  );
+}
 
 function ProviderIcon({ provider }: { provider: SocialProvider }) {
   const paths = {
@@ -30,7 +41,7 @@ function LoginAvatar({ url }: { url: string | null }) {
       {url && !failed ? (
         <Image unoptimized src={url} width={64} height={64} alt="Your profile photo" className={styles.profilePhoto} onError={() => setFailed(true)} referrerPolicy="no-referrer" />
       ) : (
-        <Image src="/void%20logo%20white.png" width={36} height={36} alt="VOID" className={styles.avatarLogo} />
+        <UserRound size={30} strokeWidth={1.35} role="img" aria-label="Default profile avatar" className={styles.defaultAvatar} />
       )}
     </div>
   );
@@ -168,6 +179,7 @@ export default function AuthScreen() {
 
   return (
     <main className={styles.page}>
+      <SpaceBackground />
       <header className={styles.brand} aria-label="VOID">
         <Image src="/void%20logo%20white.png" alt="" width={30} height={30} />
         <span>VOID</span>
@@ -175,13 +187,13 @@ export default function AuthScreen() {
 
       <div className={styles.content}>
         <section className={styles.card} aria-labelledby="auth-title">
-          <LoginAvatar key={avatarUrl || 'void'} url={avatarUrl} />
+          <LoginAvatar key={avatarUrl || 'default-profile'} url={avatarUrl} />
           <h1 id="auth-title" className={styles.title}>
             {mode === 'phone' ? 'Continue with phone' : mode === 'reset' ? 'Reset your password' : mode === 'signup' ? 'Create your account' : 'Welcome back'}
           </h1>
-          <p className={styles.subtitle}>
-            {mode === 'phone' ? 'We’ll send a secure sign-in code by SMS.' : mode === 'reset' ? 'We’ll send a reset link to your email.' : mode === 'signup' ? 'A little space for your next big idea.' : 'Your space to think, create, and explore.'}
-          </p>
+          {(mode === 'phone' || mode === 'reset') && <p className={styles.subtitle}>
+            {mode === 'phone' ? 'We’ll send a sign-in code by SMS.' : 'We’ll send a reset link to your email.'}
+          </p>}
 
           {error && <p className={styles.notice} role="alert" id="auth-error">{error}</p>}
           {success && <p className={styles.notice} role="status">{success}</p>}
@@ -257,10 +269,8 @@ export default function AuthScreen() {
             </button>
           </p>
         </section>
-        <p className={styles.tagline}>A quiet place for ambitious ideas.</p>
       </div>
 
-      <footer className={styles.footer}><LockKeyhole size={12} aria-hidden="true" /><span>Your workspace. Your possibilities.</span></footer>
     </main>
   );
 }

@@ -11,6 +11,10 @@ const DB_PATH = path.resolve(__dirname, '../../data/freeapi.db');
 
 let db: Database.Database;
 
+export function hasDb(): boolean {
+  return Boolean(db?.open);
+}
+
 export function getDb(): Database.Database {
   if (!db) {
     throw new Error('Database not initialized. Call initDb() first.');
@@ -19,7 +23,7 @@ export function getDb(): Database.Database {
 }
 
 export function initDb(dbPath?: string): Database.Database {
-  const resolvedPath = dbPath ?? DB_PATH;
+  const resolvedPath = dbPath ?? process.env.FREEAPI_DB_PATH ?? DB_PATH;
   const isMemory = resolvedPath === ':memory:';
 
   if (!isMemory) {
@@ -1816,7 +1820,7 @@ function ensureUnifiedKey(db: Database.Database) {
   if (!existing) {
     const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
     db.prepare("INSERT INTO settings (key, value) VALUES ('unified_api_key', ?)").run(key);
-    console.log(`\n  Your unified API key: ${key}\n`);
+    console.log('Unified API key created. View it in the authenticated dashboard.');
   }
 }
 

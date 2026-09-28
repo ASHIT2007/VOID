@@ -1,9 +1,10 @@
-import type { Platform } from '@freellmapi/shared/types.js';
+import type { Platform } from '@void/shared/types.js';
 import type { BaseProvider } from './base.js';
 import { GoogleProvider } from './google.js';
 import { OpenAICompatProvider } from './openai-compat.js';
 import { CohereProvider } from './cohere.js';
 import { CloudflareProvider } from './cloudflare.js';
+import { AnthropicProvider } from './anthropic.js';
 
 const providers = new Map<Platform, BaseProvider>();
 
@@ -13,6 +14,10 @@ function register(provider: BaseProvider) {
 
 // Google - unique Gemini API format
 register(new GoogleProvider());
+register(new AnthropicProvider());
+register(new OpenAICompatProvider({
+  platform: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1',
+}));
 
 // Groq - OpenAI-compatible
 register(new OpenAICompatProvider({
@@ -189,7 +194,7 @@ export function getProvider(platform: Platform): BaseProvider | undefined {
  * the caller-supplied base URL (stored per api_keys row). Returns undefined for
  * a custom provider with no base URL configured.
  */
-export function resolveProvider(platform: Platform, baseUrl?: string | null): BaseProvider | undefined {
+export function resolveProvider(platform: Platform, baseUrl?: string | null, publicOnly = false): BaseProvider | undefined {
   if (platform === 'custom') {
     const trimmed = baseUrl?.trim();
     if (!trimmed) return undefined;
@@ -198,6 +203,7 @@ export function resolveProvider(platform: Platform, baseUrl?: string | null): Ba
       name: 'Custom (OpenAI-compatible)',
       baseUrl: trimmed,
       timeoutMs: CUSTOM_PROVIDER_TIMEOUT_MS,
+      publicOnly,
     });
   }
   return providers.get(platform);

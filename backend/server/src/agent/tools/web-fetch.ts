@@ -1,4 +1,5 @@
 import { registerTool, ToolResult, ToolOptions } from '../tool-registry.js';
+import { safePublicFetch } from '@void/shared/safe-fetch.mjs';
 
 interface WebFetchArgs {
   url: string;
@@ -48,7 +49,7 @@ export function registerWebFetchTools(): void {
           return { content: formatted };
         } else {
           // Fallback to raw fetch
-          const rawRes = await fetch(url);
+          const rawRes = await safePublicFetch(url, { maxBytes: 2 * 1024 * 1024 });
           let html = await rawRes.text();
           // Simple strip HTML
           let content = html.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();

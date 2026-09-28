@@ -1,69 +1,20 @@
-import { NextResponse } from 'next/server';
-
-function isPrivateHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (host === 'localhost' || host === '::1' || host.endsWith('.local')) return true;
-  const parts = host.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false;
-  return parts[0] === 10 || parts[0] === 127 || parts[0] === 0 ||
-    (parts[0] === 169 && parts[1] === 254) ||
-    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
-    (parts[0] === 192 && parts[1] === 168);
-}
+import { requireDeploymentAccess } from '@/lib/deployment-access';
+import { safePublicFetch } from '@void/shared/safe-fetch.mjs';
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const url = searchParams.get('url');
-
-  if (!url) {
-    return new NextResponse('Missing url parameter', { status: 400 });
-  }
-
+  const denied = requireDeploymentAccess(request);
+  if (denied) return denied;
+  const url = new URL(request.url).searchParams.get('url');
+  if (!url) return new Response('Missing URL', { status: 400 });
   try {
-    const targetUrl = new URL(url);
-    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-      return new NextResponse('Invalid URL protocol', { status: 400 });
+    const response = await safePublicFetch(url, { signal: AbortSignal.any([request.signal, AbortSignal.timeout(20_000)]) });
+    if (!response.ok) return new Response('Image unavailable', { status: 502 });
+    const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() || '';
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'].includes(type)) {
+      return new Response('Unsupported image format', { status: 415 });
     }
-    if (isPrivateHost(targetUrl.hostname)) {
-      return new NextResponse('Private network URLs are not allowed', { status: 400 });
-    }
-
-    const isWikimedia = targetUrl.hostname.includes("wikimedia.org") || targetUrl.hostname.includes("wikipedia.org");
-    const userAgent = isWikimedia
-      ? "ChatAIStudentApp/1.0 (Wikimedia Integration; contact@chataistudent.com)"
-      : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
-    const response = await fetch(targetUrl.toString(), {
-      redirect: 'follow',
-      headers: {
-        'User-Agent': userAgent,
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      }
-    });
-
-    if (response.ok) {
-      const contentType = response.headers.get('Content-Type') || '';
-      if (!contentType.toLowerCase().startsWith('image/')) {
-        return new NextResponse('Upstream response is not an image', { status: 415 });
-      }
-      const declaredLength = Number(response.headers.get('Content-Length') || 0);
-      if (declaredLength > 15 * 1024 * 1024) {
-        return new NextResponse('Image is too large', { status: 413 });
-      }
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength > 15 * 1024 * 1024) {
-        return new NextResponse('Image is too large', { status: 413 });
-      }
-      const headers = new Headers();
-      headers.set('Content-Type', contentType);
-      headers.set('Cache-Control', 'public, max-age=86400');
-      headers.set('Access-Control-Allow-Origin', '*');
-      return new NextResponse(buffer, { headers });
-    }
+    return new Response(response.body, { headers: { 'Content-Type': type, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' } });
   } catch {
-    // ignore
+    return new Response('Image URL is blocked or unavailable', { status: 400 });
   }
-
-  return new NextResponse('Image not found or failed to load', { status: 404 });
 }

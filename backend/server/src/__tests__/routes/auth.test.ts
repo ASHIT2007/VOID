@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { Express } from 'express';
-import { createApp } from '../../app.js';
+import { createApp } from '../helpers/legacy-app.js';
 import { initDb } from '../../db/index.js';
 
 async function call(app: Express, method: string, path: string, body?: any, token?: string) {

@@ -1,129 +1,71 @@
-import { createHash } from 'node:crypto';
+import { requireDeploymentAccess } from '@/lib/deployment-access';
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchWithRetry } from '@/lib/reliability';
-import { readGeneratedImage, storeGeneratedImage } from '@/lib/generated-image-store';
+import { z } from 'zod';
+import { authenticatedUser, loadByokContext, serviceDb } from '@/lib/ai/server';
+import { backendUrl, backendHeaders } from '@/lib/backend';
+import { POST as generateImage } from '@/app/api/generate-image/route';
 
-type DesignBrief = { subject?: string; prompt?: string; quality?: unknown; format?: string; seed?: number };
-type DesignImage = { id: string; url: string; modelUsed: string; generated: true };
-const imageCache = globalThis as typeof globalThis & {
-  voidDesignImages?: Map<string, { expires: number; result: Promise<DesignImage> }>;
-};
-const cache = imageCache.voidDesignImages ??= new Map();
-const MIN_IMAGE_BYTES = 8 * 1024;
-
-class ImageServiceError extends Error {
-  constructor(message: string, public code = 'generation_failed', public status = 502) { super(message); }
-}
-
-function imageMime(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/webp' | null {
-  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
-  if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
-  return null;
-}
-
-function completedImage(bytes: Buffer, modelUsed: string) {
-  const mimeType = imageMime(bytes);
-  if (!mimeType || bytes.length < MIN_IMAGE_BYTES) throw new ImageServiceError(`${modelUsed} returned an invalid image.`);
-  return { bytes, mimeType, modelUsed };
-}
-
-async function generateWithCloudflare(prompt: string, portrait: boolean) {
-  const endpoint = process.env.CLOUDFLARE_SDXL_URL || 'https://image-api.opundefined.workers.dev/';
-  const apiKey = process.env.CLOUDFLARE_SDXL_KEY || process.env.IMG2IMG_WORKER_KEY;
-  if (!apiKey) throw new ImageServiceError('Cloudflare image generation is not configured.', 'not_configured');
-  const response = await fetchWithRetry(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ prompt, width: portrait ? 768 : 1344, height: portrait ? 1344 : 768 }),
-  }, { attempts: 2, connectTimeoutMs: 90_000, maxDelayMs: 1_000 });
-  if (!response.ok) throw new ImageServiceError(`Cloudflare image generation failed (${response.status}).`);
-  return completedImage(Buffer.from(await response.arrayBuffer()), 'Cloudflare FLUX.1 Schnell');
-}
-
-async function generateWithFlux(prompt: string, portrait: boolean) {
-  const apiKey = process.env.TOGETHER_API_KEY;
-  if (!apiKey) throw new ImageServiceError('FLUX image generation is not configured.', 'not_configured');
-  const failures: string[] = [];
-  for (const candidate of [
-    { model: 'black-forest-labs/FLUX.1.1-pro', label: 'FLUX 1.1 Pro · Together' },
-    { model: 'black-forest-labs/FLUX.1-schnell-Free', label: 'FLUX Schnell · Together' },
-  ]) {
-    const response = await fetchWithRetry('https://api.together.xyz/v1/images/generations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: candidate.model,
-        prompt: prompt.slice(0, 1800),
-        n: 1,
-        response_format: 'base64',
-        output_format: 'png',
-        width: portrait ? 768 : 1344,
-        height: portrait ? 1344 : 768,
-        negative_prompt: 'text, lettering, logos, watermark, blurry, duplicate background, poster mockup, frame',
-      }),
-    }, { attempts: 1, connectTimeoutMs: 150_000 });
-    if (!response.ok) { failures.push(`${candidate.label} (${response.status})`); continue; }
-    const payload = await response.json() as { data?: Array<{ b64_json?: string; url?: string }> };
-    const item = payload.data?.[0];
-    if (item?.b64_json) return completedImage(Buffer.from(item.b64_json, 'base64'), candidate.label);
-    if (item?.url && /^https:\/\//i.test(item.url)) {
-      const imageResponse = await fetchWithRetry(item.url, {}, { attempts: 2, connectTimeoutMs: 90_000 });
-      if (imageResponse.ok) return completedImage(Buffer.from(await imageResponse.arrayBuffer()), candidate.label);
-    }
-    failures.push(`${candidate.label} returned no image`);
-  }
-  throw new ImageServiceError(`FLUX image generation failed: ${failures.join('; ')}`);
-}
-
-async function generateDesign(brief: DesignBrief): Promise<DesignImage> {
-  const subject = typeof brief.subject === 'string' ? brief.subject.trim().slice(0, 300) : '';
-  const prompt = typeof brief.prompt === 'string' ? brief.prompt.trim().slice(0, 8000) : '';
-  if (!subject && !prompt) throw new ImageServiceError('A subject or image brief is required.', 'missing_prompt', 400);
-  const portrait = /poster|infographic|flyer/.test(brief.format || '');
-  const fullPrompt = `Create a purposeful editorial image asset to place inside ${portrait ? 'a portrait poster or infographic' : 'a landscape presentation slide'}. Do not render the poster, slide, page, frame, border, or surrounding mockup itself. Subject: ${subject}.\nVisual brief: ${prompt}\nFollow the specified subject, era, palette, composition, and crop. Leave all text out so the editor can place readable native typography. Preserve factual relationships in diagrams. Do not invent data or depict an invented image as an archival photograph. Avoid unrelated people, decorative stock scenery, watermarks, blurred duplicate backgrounds, and page mockups. Fill the image canvas edge to edge with the requested visual.`;
-  const key = createHash('sha256').update(JSON.stringify(['cloudflare-flux-v1', fullPrompt, portrait, brief.seed || 0])).digest('hex');
-  const cached = cache.get(key);
-  if (cached && cached.expires > Date.now()) return cached.result;
-  for (const [cacheKey, value] of cache) if (value.expires < Date.now()) cache.delete(cacheKey);
-  if (cache.size >= 128) cache.delete(cache.keys().next().value!);
-  const result = (async (): Promise<DesignImage> => {
-    let generated;
-    try { generated = await generateWithCloudflare(fullPrompt, portrait); }
-    catch (cloudflareError) {
-      console.warn('[design-image] Cloudflare unavailable; switching to FLUX:', cloudflareError instanceof Error ? cloudflareError.message : cloudflareError);
-      generated = await generateWithFlux(fullPrompt, portrait);
-    }
-    const stored = await storeGeneratedImage(generated.bytes, generated.mimeType);
-    return { id: stored.id, url: `/api/generated-image/${stored.id}?void_generated=true&model_name=${encodeURIComponent(generated.modelUsed)}`, modelUsed: generated.modelUsed, generated: true };
-  })();
-  cache.set(key, { result, expires: Date.now() + 24 * 60 * 60 * 1000 });
-  try { return await result; } catch (error) { cache.delete(key); throw error; }
-}
-
-function imageError(error: unknown) {
-  return NextResponse.json({ error: error instanceof Error ? error.message : 'Image generation failed.',
-    code: error instanceof ImageServiceError ? error.code : 'generation_failed', provider: 'Cloudflare / FLUX' },
-  { status: error instanceof ImageServiceError ? error.status : 500 });
-}
+const briefSchema = z.object({
+  subject: z.string().trim().min(2).max(120), prompt: z.string().trim().min(2).max(3000),
+  grounding: z.string().max(12000).optional(), source: z.enum(['auto', 'reference']).default('auto'),
+  quality: z.string().optional(), format: z.string().max(30).optional(), seed: z.number().optional(),
+});
 
 export async function POST(request: NextRequest) {
-  try { return NextResponse.json(await generateDesign(await request.json())); }
-  catch (error) { return imageError(error); }
+  const denied = requireDeploymentAccess(request);
+  if (denied) return denied;
+  let generating = false;
+  try {
+    const userId = await authenticatedUser(request);
+    if (!userId) return NextResponse.json({ error: 'Sign in to add presentation images.' }, { status: 401 });
+    const parsed = briefSchema.safeParse(await request.json());
+    if (!parsed.success) return NextResponse.json({ error: 'Provide a slide subject and a specific visual brief.' }, { status: 400 });
+    const brief = parsed.data;
+    const db = serviceDb();
+    const { data: connections, error } = await db.from('provider_connections')
+      .select('id,capability_usage').eq('user_id', userId).eq('enabled', true).eq('status', 'connected');
+    if (error) throw new Error('Could not check connected image models.');
+    const ids = (connections || []).filter(item => item.capability_usage?.image !== false).map(item => item.id);
+    const { data: models, error: modelError } = ids.length ? await db.from('provider_models')
+      .select('id,capabilities').in('connection_id', ids).eq('enabled', true) : { data: [], error: null };
+    if (modelError) throw new Error('Could not check connected image models.');
+    const hasImageModel = (models || []).some(item => item.capabilities?.imageGeneration === true);
+
+    if (brief.source === 'reference' || !hasImageModel) {
+      const response = await fetch(backendUrl('/api/agent/media'), { method: 'POST',
+        headers: backendHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ subjects: [brief.subject], grounding: brief.grounding || brief.subject,
+          byok: await loadByokContext(userId) }),
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(40_000)]),
+      });
+      if (!response.ok) throw new Error('Reference image search is unavailable.');
+      const payload = await response.json();
+      const candidate = Array.isArray(payload.images) ? payload.images.find((item: { verified?: boolean; url?: string }) => item.verified === true && /^https:\/\//i.test(item.url || '')) : undefined;
+      if (!candidate) return NextResponse.json({ generated: false, omitted: true, modelUsed: 'Web reference', notice: 'No relevant verified reference image was available for this slide.' });
+      return NextResponse.json({ url: candidate.url, generated: false, modelUsed: 'Web reference', sourceUrl: candidate.sourceUrl,
+        caption: candidate.title, notice: !hasImageModel ? 'No image model connected; using a verified web reference where needed.' : undefined });
+    }
+
+    const headers = new Headers({ 'Content-Type': 'application/json', 'x-void-user-token': request.headers.get('x-void-user-token') || '' });
+    if (request.headers.has('authorization')) headers.set('authorization', request.headers.get('authorization')!);
+    generating = true;
+    const response = await generateImage(new Request(new URL('/api/generate-image', request.url), { method: 'POST', headers,
+      body: JSON.stringify({ prompt: `${brief.prompt}\nCreate only a supporting illustration. No slide mockup, text, labels, charts or watermark.`,
+        size: brief.format === 'presentation' ? '1536x1024' : '1024x1536', connectedOnly: true }), signal: request.signal }));
+    const payload = await response.json();
+    if (!response.ok) return NextResponse.json({ error: 'This image could not be generated because the connected image model encountered a problem. Please retry or check the model API key and quota.', code: 'generation_failed' }, { status: response.status });
+    if (typeof payload.url !== 'string' || !/^\/api\/generated-image\/[a-f0-9-]{36}\.(png|jpg|webp)$/i.test(payload.url) || typeof payload.modelUsed !== 'string') {
+      throw new Error('The connected image model returned an invalid image.');
+    }
+    return NextResponse.json({ url: payload.url, modelUsed: payload.modelUsed, generated: true });
+  } catch {
+    return NextResponse.json({ error: generating
+      ? 'This image could not be generated because the connected image model encountered a problem. Please retry or check the model API key and quota.'
+      : 'The image could not be prepared. Please check your connected image model or reference-image service and retry.',
+      code: generating ? 'generation_failed' : 'image_preparation_failed' }, { status: 503 });
+  }
 }
 
-// Successful POST URLs are stored on the artifact so reopening a saved deck
-// does not make another paid image request. Legacy generation URLs still work.
-export async function GET(request: NextRequest) {
-  const parameters = request.nextUrl.searchParams;
-  if (parameters.get('mode') !== 'generate') {
-    return NextResponse.json({ error: 'Use a verified source image URL for web imagery.' }, { status: 404 });
-  }
-  try {
-    const result = await generateDesign({ subject: parameters.get('subject') || '', prompt: parameters.get('prompt') || '',
-      quality: parameters.get('quality'), format: parameters.get('format') || '', seed: Number(parameters.get('seed')) || 0 });
-    const image = await readGeneratedImage(result.id);
-    return new NextResponse(new Uint8Array(image.bytes), { headers: { 'Content-Type': image.mimeType,
-      'Cache-Control': 'private, max-age=86400', 'X-Visual-Source': result.modelUsed } });
-  } catch (error) { return imageError(error); }
+export async function GET() {
+  return NextResponse.json({ error: 'Use an authenticated POST to prepare a slide image.' }, { status: 405 });
 }

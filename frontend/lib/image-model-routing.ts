@@ -6,7 +6,7 @@ export const POSTER_FALLBACK_MODEL = POSTER_CLOUDFLARE_MODEL;
 export type ImageProviderId = "gemini" | "pollinations" | "together" | "cloudflare" | "openai";
 
 export function imageModelForRequest(defaultImageModel: string, isRasterPosterRequest: boolean): string {
-  return isRasterPosterRequest ? POSTER_IMAGE_MODEL : defaultImageModel;
+  return defaultImageModel || "Auto";
 }
 
 /**

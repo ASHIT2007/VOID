@@ -1,4 +1,6 @@
 import { assessTask, effortBudget } from './effort-policy.js';
+import { presentationDelivery, requestedFileTools } from '@void/shared/file-intent.mjs';
+import { isDiagramRequest, workspaceInspectionTools } from '@void/shared/chat-intent.mjs';
 export type AgentRole =
   | 'general'
   | 'researcher'
@@ -65,6 +67,7 @@ function makeAgent(role: AgentRole, index: number): PlannedAgent {
 }
 
 export function isArtifactCreationRequest(message: string): boolean {
+  if (presentationDelivery(message) === 'preview') return true;
   const artifactNoun = /\b(?:presentations?|powerpoints?|pptx?|slide decks?|slides|posters?|infographics?|visual roadmaps?|study sheets?|flyers?|artifacts?|reports?|documents?|white papers?|briefing documents?|spreadsheets?|workbooks?)\b/i;
   if (isWebArtifactCreationRequest(message)) return true;
   if (!artifactNoun.test(message)) return false;
@@ -89,6 +92,7 @@ export function isReportCreationRequest(message: string): boolean {
 }
 
 export function isVisualArtifactCreationRequest(message: string): boolean {
+  if (presentationDelivery(message) === 'preview') return true;
   return isArtifactCreationRequest(message)
     && /\b(?:presentations?|powerpoints?|pptx?|slide decks?|slides|posters?|infographics?|visual roadmaps?|study sheets?|flyers?)\b/i.test(message);
 }
@@ -102,8 +106,12 @@ export function createExecutionPlan(input: TaskPlanningInput): AgentExecutionPla
     .replace(/\s*\[SYSTEM DIRECTIVE:[\s\S]*?\]\s*/gi, ' ')
     .trim();
   const assessment = assessTask(message, input.attachmentCount);
+  if (isDiagramRequest(message) || workspaceInspectionTools(message).length) {
+    return { intent: 'simple', agents: [makeAgent('general', 0)] };
+  }
   const cap = Math.max(1, Math.min(input.maxAgents ?? 4, effortBudget(input.reasoningEffort, assessment.simple).maxSpecialists));
-  const artifact = !assessment.mechanical && isArtifactCreationRequest(message);
+  const fileRequest = requestedFileTools(message).length > 0;
+  const artifact = !fileRequest && !assessment.mechanical && isArtifactCreationRequest(message);
   const artifactKind: AgentExecutionPlan['artifactKind'] = artifact
     ? isReportCreationRequest(message) ? 'report' : isVisualArtifactCreationRequest(message) ? 'visual' : isWebArtifactCreationRequest(message) ? 'web' : 'other'
     : undefined;
@@ -137,7 +145,7 @@ export function createExecutionPlan(input: TaskPlanningInput): AgentExecutionPla
     roles = input.reasoningEffort === 'high' ? ['analyst', 'fact_checker', 'general'] : ['analyst', 'general'];
   }
   // Low never fans out, including research, attachments, and legacy team switches.
-  if (cap === 1) roles = ['general'];
+  if (cap === 1 || fileRequest) { roles = ['general']; if (fileRequest) intent = 'simple'; }
 
   return {
     intent,

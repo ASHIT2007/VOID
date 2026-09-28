@@ -1,37 +1,64 @@
 import crypto from 'crypto';
+import { requestedFileTools } from '@void/shared/file-intent.mjs';
+import { isDiagramRequest } from '@void/shared/chat-intent.mjs';
+import { runWorkspaceInspection } from './workspace-inspection.js';
 import { runAgentLoop, type AgentEvent, type AgentLoopOptions } from './agent-loop.js';
 import { runAdaptiveOrchestration } from './multi-agent-orchestrator.js';
 import { createExecutionPlan } from './task-planner.js';
 import { answerDepthInstruction, effortAnswerInstruction, resolveEffort, effortBudget, type EffortChoice } from './effort-policy.js';
 import { withDeadline } from './deadline.js';
-import { classifyMediaIntent } from './media-orchestrator.js';
+import { availableChatRouteCount, currentByokContext } from '../ai/byok-context.js';
+import { MEDIA_WORKER_MS } from './media-budget.js';
 import { getTool } from './tool-registry.js';
+import { runMediaWorker } from './media-orchestrator.js';
 import { ATTACHMENT_ONLY_INSTRUCTION, shouldGroundToAttachments } from './attachment-grounding.js';
 
 type EmergencySource = { url: string; title: string; content?: string };
 
 function cleanEvidence(value: string, limit = 420): string {
-  return value
+  let cleaned = value
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/\[(?:\d+[\s,;-]*)+\]/g, ' ')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/[*#_~`>|]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, limit)
     .trim();
+
+  // If text exceeds limit or cuts off without sentence-ending punctuation,
+  // trim cleanly at a sentence or word boundary so words are never cut in half.
+  if (cleaned.length > limit || !/[.!?]$/.test(cleaned)) {
+    const candidate = cleaned.length > limit ? cleaned.slice(0, limit) : cleaned;
+    const lastPunct = Math.max(
+      candidate.lastIndexOf('. '),
+      candidate.lastIndexOf('! '),
+      candidate.lastIndexOf('? '),
+      candidate.lastIndexOf('.\n'),
+    );
+    if (lastPunct > 60) {
+      cleaned = candidate.slice(0, lastPunct + 1);
+    } else {
+      const lastSpace = candidate.lastIndexOf(' ');
+      if (lastSpace > 40) {
+        cleaned = candidate.slice(0, lastSpace).replace(/[,;:\-\s]+$/, '') + '.';
+      } else {
+        cleaned = candidate.replace(/[,;:\-\s]+$/, '') + '.';
+      }
+    }
+  }
+
+  return cleaned.trim();
 }
 
 export function buildEmergencyEvidenceAnswer(evidence: string[], isVoice = false): string {
   const useful = [...new Set(evidence.map((item) => cleanEvidence(item)).filter((item) => item.length >= 24))].slice(0, 4);
   if (useful.length === 0) return '';
   if (isVoice) return `Here is what I could verify. ${useful.join(' ')}`.replace(/\s+/g, ' ').trim();
-  return `Here is the verified information recovered from the completed research:\n\n${useful.map((item) => `- ${item}`).join('\n')}`;
+  return `Web search returned these source excerpts, but the answer model could not finish:\n\n${useful.map((item) => `- ${item}`).join('\n')}`;
 }
 
 function shouldRunEmergencySearch(message: string, attachmentGrounded = false): boolean {
   if (attachmentGrounded) return false;
-  return /\b(?:search|find|look up|browse|web|online|source|citation|latest|current|today|recent|news|price|score|schedule|weather|forecast|release|version|verify|fact[ -]?check|what (?:is|are|was|were)|who (?:is|was|are|were)|tell me about|explain)\b/i.test(message)
+  return /\b(?:search|find|look up|browse|web|online|source|citation|latest|current|today|recent|news|price|score|schedule|weather|forecast|release|version|verify|fact[ -]?check|what (?:is|are|was|were)|who (?:is|was|are|were)|tell (?:me )?about|explain)\b/i.test(message)
     && !/\b(?:write|rewrite|draft|compose|translate|debug|code|email|letter|poem|story)\b/i.test(message);
 }
 
@@ -58,17 +85,21 @@ async function recoverWithDirectSearch(options: Pick<AgentLoopOptions, 'message'
 }
 
 export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEffort'> & { reasoningEffort?: EffortChoice; maxAgents?: number }) {
+  if (await runWorkspaceInspection(options)) return;
   const attachmentGrounded = shouldGroundToAttachments(options.message || '', options.attachments);
   const hasVisualInput = options.attachments?.some((attachment) => attachment.type.startsWith('image/'));
   const effort = resolveEffort(options.reasoningEffort, options.message || '', options.attachments?.length);
   const budget = effortBudget(effort.effective, effort.assessment.simple);
-  const plan = createExecutionPlan({ message: options.message || '', mode: attachmentGrounded ? 'normal' : options.mode, reasoningEffort: effort.effective, attachmentCount: options.attachments?.length, maxAgents: attachmentGrounded ? 1 : options.maxAgents });
-  const longFormTask = Boolean(effort.assessment.questionSet) || plan.artifactKind === 'report' || plan.artifactKind === 'web';
-  const responseBudgetMs = effort.assessment.questionSet
+  const plan = createExecutionPlan({ message: options.message || '', mode: attachmentGrounded ? 'normal' : options.mode, reasoningEffort: effort.effective, attachmentCount: options.attachments?.length, maxAgents: attachmentGrounded ? 1 : Math.min(options.maxAgents ?? budget.maxSpecialists, availableChatRouteCount()) });
+  const fileTools = requestedFileTools(options.message || '');
+  const longFormTask = fileTools.length > 0 || Boolean(effort.assessment.questionSet) || plan.artifactKind === 'report' || plan.artifactKind === 'web';
+  const configuredStageCount = currentByokContext()?.execution?.roles.filter(role => role.kind !== 'answer_writer').length || 0;
+  const responseBudgetMs = (fileTools.includes('generate_presentation') ? 660_000 : effort.assessment.questionSet
     ? effort.effective === 'high' ? 210_000 : effort.effective === 'medium' ? 160_000 : 110_000
-    : plan.intent === 'artifact'
+    : plan.intent === 'artifact' || fileTools.length
     ? effort.effective === 'high' ? 190_000 : effort.effective === 'medium' ? 140_000 : 90_000
-    : Math.max(hasVisualInput ? 100_000 : 0, effort.effective === 'high' ? 95_000 : budget.responseMs, !attachmentGrounded && !options.isVoice && classifyMediaIntent(options.message || '').considered ? 55_000 : 0);
+    : Math.max(hasVisualInput ? 100_000 : 0, effort.effective === 'high' ? 95_000 : budget.responseMs, !options.isVoice ? budget.responseMs + MEDIA_WORKER_MS : 0))
+    + Math.min(configuredStageCount, 6) * budget.workerMs;
   const info = { requested: effort.requested, effective: effort.effective, reason: effort.reason,
     agentCount: plan.agents.length === 1 ? 1 : plan.agents.length + 1, searchMode: attachmentGrounded ? 'off' as const : effort.searchMode, simple: effort.assessment.simple };
   options.onEvent({ type: 'effort', ...info });
@@ -87,8 +118,9 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
     mode: attachmentGrounded ? 'normal' : options.mode,
     reasoningEffort: effort.effective,
     searchMode: attachmentGrounded ? 'off' : effort.searchMode,
-    allowedTools: attachmentGrounded ? [] : options.allowedTools,
+    allowedTools: attachmentGrounded ? fileTools : options.allowedTools,
     maxIterations: budget.maxIterations,
+    finalizeAfterSearch: !effort.assessment.complex && !effort.assessment.research && !longFormTask && plan.intent !== 'artifact' && !attachmentGrounded,
     maxProviderAttempts: options.isVoice ? 6 : effort.effective === 'high' ? 12 : effort.effective === 'medium' ? 10 : 8,
     maxOutputTokens: effort.assessment.mechanical
       ? Math.min(12000, Math.max(budget.maxOutputTokens, Math.ceil((options.message || '').length / 3)))
@@ -104,14 +136,15 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
   };
   try {
     await withDeadline(async signal => {
-      await runAdaptiveOrchestration({ ...base, signal, maxAgents: attachmentGrounded ? 1 : Math.min(options.maxAgents ?? budget.maxSpecialists, budget.maxSpecialists), maxWorkerRetries: 0,
+      await runAdaptiveOrchestration({ ...base, signal, maxAgents: attachmentGrounded ? 1 : Math.min(options.maxAgents ?? budget.maxSpecialists, budget.maxSpecialists, availableChatRouteCount()), maxWorkerRetries: 0,
+        onAnswerReady: text => { completed = Boolean(text.trim()); },
         workerTimeoutMs: effort.effective === 'high' ? 40_000 : budget.workerMs,
         // Status events already keep the interface responsive. Streaming a
         // separate model-written preamble made polished answers start with
         // extra throat-clearing and consumed scarce provider capacity.
         progressiveOpening: false,
         onEvent: event => {
-          if (signal.aborted) return;
+          if (signal.aborted && event.type !== 'done') return;
           if (event.type === 'error') { failure = event.message; return; }
           if (event.type === 'agent_result') evidence.push(event.summary);
           if (event.type === 'media') verifiedMedia = event;
@@ -142,6 +175,10 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
   // Optional media deadlines cannot discard a completed written answer.
   if (completed && answerText.trim()) {
     options.onEvent({ type: 'done', fullText: answerText });
+    return;
+  }
+  if (fileTools.length || isDiagramRequest(options.message || '')) {
+    options.onEvent({ type: 'error', message: failure || 'The requested file could not be completed. Please retry; no image was substituted.' });
     return;
   }
   // Keep the current display until a complete replacement is available.
@@ -178,17 +215,13 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
     }), plan.intent === 'artifact' ? 100_000 : 60_000, options.signal);
   } catch { /* A clean explicit partial result below replaces an unfinished draft. */ }
   if (options.signal?.aborted) return;
+  let finalRecoveryText = recoveryText;
   if (recovered) {
     options.onEvent({ type: 'response_reset' });
     options.onEvent({ type: 'text_delta', content: recoveryText });
   } else {
     options.onEvent({ type: 'response_reset' });
     let fallbackText = buildEmergencyEvidenceAnswer(evidence, options.isVoice);
-    if (!fallbackText && verifiedMedia?.images.length) {
-      fallbackText = options.isVoice
-        ? 'I found relevant visual results, but voice mode does not present web images.'
-        : `I found ${verifiedMedia.images.length} verified web image${verifiedMedia.images.length === 1 ? '' : 's'} for this request; they are shown with the answer.`;
-    }
     if (!fallbackText && plan.intent !== 'artifact') {
       const directSearch = await recoverWithDirectSearch(options);
       if (directSearch) {
@@ -210,9 +243,21 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
         ? `The ${plan.artifactKind === 'report' ? 'report' : 'artifact'} could not be completed because no configured model returned a valid, complete result. No partial or broken preview was opened.`
         : options.isVoice
           ? 'I could not produce a trustworthy answer because every configured answer route is unavailable right now.'
-          : 'I could not produce a trustworthy answer because every configured model route failed and no verifiable evidence was available.';
+          : `The connected AI providers could not complete this answer. ${/429|rate.?limit|quota/i.test(failure || '') ? 'The provider reported a rate limit or exhausted quota. Try again after it resets, or connect another chat model.' : 'Check your connected model, API key and quota, then retry.'}`;
     }
     options.onEvent({ type: 'text_delta', content: fallbackText });
+    finalRecoveryText = fallbackText;
+  }
+  // Recovery used to bypass the entire media phase. Preserve the same semantic
+  // veto and answer-grounding contract used for a normal successful response.
+  if (!verifiedMedia && finalRecoveryText.trim() && plan.intent !== 'artifact' && !options.isVoice && !attachmentGrounded && !options.signal?.aborted) {
+    try {
+      await withDeadline(signal => runMediaWorker({ ...base, signal, responseText: finalRecoveryText }, event => {
+        if (!signal.aborted) options.onEvent(event);
+      }), MEDIA_WORKER_MS, options.signal);
+    } catch {
+      options.onEvent({ type: 'media_status', status: 'failed', label: 'Image search unavailable', reason: 'The recovered answer is complete, but reference images could not be validated.' });
+    }
   }
   options.onEvent({ type: 'done', fullText: '' });
 }

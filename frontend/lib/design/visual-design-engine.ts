@@ -337,22 +337,17 @@ function normalizeSlide(slide: Slide, index: number, format: ArtifactFormat, sub
   }
   if (!bodyText && !bullets.length && subtitle && index > 0) bodyText = subtitle;
 
-  if (format === "presentation") {
-    bodyText = shorten(bodyText, 230);
-    bullets = bullets.slice(0, 4).map((item) => shorten(item, 125));
-  } else {
-    bodyText = shorten(bodyText, 760);
-    bullets = bullets.slice(0, 6).map((item) => shorten(item, 150));
-  }
+  // Normalization must be lossless. Density is validated before publication;
+  // cutting at a character boundary silently destroyed conclusions and facts.
 
   const repairedContent: Slide["content"] = {
     ...(sourceContent as Slide["content"]),
     bodyText: bodyText || undefined,
     bullets,
-    metrics: metrics.slice(0, 4),
-    factCards: factCards.slice(0, 4),
-    timeline: timeline.slice(0, 6),
-    process: process.slice(0, 6),
+    metrics,
+    factCards,
+    timeline,
+    process,
     comparison,
     chart,
     quote,
@@ -412,7 +407,7 @@ export function normalizePresentation(input: PresentationData): PresentationData
     readingDirection: input.designPlan?.readingDirection || "top-to-bottom",
     style,
     density: input.designPlan?.density || (format === "presentation" ? "spacious" : format === "academic-poster" ? "dense" : "balanced"),
-    imageStrategy: input.designPlan?.imageStrategy || "Use several distinct, relevant verified web images when evidence matters. For conceptual support, request a detailed Cloudflare or FLUX illustration with an explicit imagePrompt and hero-image or product-image role; keep evidence, charts and labels native.",
+    imageStrategy: input.designPlan?.imageStrategy || "Prefer supporting illustrations from the user’s connected image model for selected visual slides. Use verified web references only for authentic documentary subjects, or when no image model is connected. Keep other slides as native diagrams, charts or typography.",
     recurringMotif: input.designPlan?.recurringMotif || (style === "playful" ? "Oversized circles and contrasting color fields" : style === "technology" ? "Precise rules and a modular technical grid" : "Strong type, asymmetric framing and recurring color fields"),
     palette: normalizePalette(input.designPlan?.palette, fallbackPalette),
   };
@@ -424,61 +419,22 @@ export function normalizePresentation(input: PresentationData): PresentationData
   const contentBank = extractContentBank(sourceSlides);
 
   const slides = sourceSlides.map((slide, index) => normalizeSlide(slide, index, format, subject, plan.keyMessage, contentBank));
-  if (format === "presentation" && slides.length >= 5) {
-    const hasConclusion = slides.some((slide) => /\b(?:conclusion|summary|takeaways?|closing)\b/i.test(slide.title) || slide.layout === "closing");
-    const hasReferences = slides.some((slide) => /\b(?:sources?|references?|bibliography|works cited)\b/i.test(slide.title) || slide.layout === "references");
-    const sourceUrls = [...new Set(slides.flatMap((slide) => slide.content.sources || []).filter(Boolean))];
-    if (!hasReferences) {
-      const lastSlideIsConclusion = slides[slides.length - 1].layout === "closing" || /\b(?:conclusion|summary|takeaways?|closing|legacy|aftermath)\b/i.test(slides[slides.length - 1].title);
-      const sourceIndex = lastSlideIsConclusion ? slides.length - 2 : slides.length - 1;
-      const original = slides[sourceIndex];
-      slides[sourceIndex] = {
-        ...original,
-        title: "Sources & further reading",
-        subtitle: "References used across this presentation",
-        layout: "references",
-        visualRole: "typography",
-        imageUrl: undefined,
-        imagePrompt: undefined,
-        content: {
-          ...original.content,
-          bodyText: sourceUrls.length ? undefined : "No external source URLs were supplied with this draft. Add verified references before publishing.",
-          bullets: sourceUrls.slice(0, 6).map((url) => {
-            try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return shorten(url, 110); }
-          }),
-          sources: sourceUrls,
-        },
-      };
-    }
-    if (!hasConclusion) {
-      const conclusionIndex = Math.max(1, slides.length - 2);
-      const original = slides[conclusionIndex];
-      const takeaways = slides.slice(1, conclusionIndex + 1)
-        .map((slide) => slide.content.takeaway || slide.content.bullets?.[0] || slide.content.bodyText)
-        .filter((item): item is string => Boolean(item))
-        .slice(-3)
-        .map((item) => shorten(item, 115));
-      slides[conclusionIndex] = {
-        ...original,
-        title: "Conclusion",
-        subtitle: "What the evidence adds up to",
-        layout: "closing",
-        visualRole: "typography",
-        imageUrl: undefined,
-        imagePrompt: undefined,
-        content: { ...original.content, bodyText: shorten(plan.keyMessage, 190), bullets: takeaways },
-      };
-    }
-    const referenceIndex = slides.findIndex((slide) => slide.layout === "references" || /\b(?:sources?|references?|bibliography|works cited)\b/i.test(slide.title));
-    if (referenceIndex >= 0 && referenceIndex !== slides.length - 1) {
-      const [references] = slides.splice(referenceIndex, 1);
-      slides.push({ ...references, layout: "references", visualRole: "typography", imageUrl: undefined, imagePrompt: undefined });
-    }
-    const conclusionIndex = slides.findIndex((slide) => slide.layout === "closing" || /\b(?:conclusion|summary|takeaways?|closing)\b/i.test(slide.title));
-    if (conclusionIndex >= 0 && conclusionIndex !== slides.length - 2) {
-      const [conclusion] = slides.splice(conclusionIndex, 1);
-      slides.splice(Math.max(0, slides.length - 1), 0, { ...conclusion, layout: "closing", visualRole: "typography", imageUrl: undefined, imagePrompt: undefined });
-    }
+  // Preserve authored slide count and subject coverage. Never turn an arbitrary
+  // content slide into a conclusion or bibliography during rendering.
+  const sourceUrls = [...new Set(slides.flatMap(slide => slide.content.sources || []))]
+    .filter(url => { try { return ["http:", "https:"].includes(new URL(url).protocol); } catch { return false; } });
+  for (const slide of slides) {
+    if (slide.layout !== "references" && !/\b(?:sources?|references?|bibliography|works cited)\b/i.test(slide.title)) continue;
+    slide.layout = "references";
+    slide.visualRole = "typography";
+    slide.imageUrl = undefined;
+    slide.imagePrompt = undefined;
+    slide.content = {
+      ...slide.content,
+      sources: sourceUrls,
+      bullets: [],
+      bodyText: sourceUrls.length ? undefined : "No external references were verified for this draft. Review the claims and add sources before publishing.",
+    };
   }
 
   return {

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 
 const ALGORITHM = 'aes-256-gcm';
 
@@ -26,12 +26,9 @@ function parseHexKey(value: string, source: 'env' | 'db'): Buffer {
   return Buffer.from(value, 'hex');
 }
 
-// Outside production we auto-generate and persist a key so a fresh clone
-// (`npm run dev`) boots without manual setup — the placeholder ENCRYPTION_KEY
-// in .env.example would otherwise crash the server on boot, which surfaces in
-// the client as "Can't reach the server". Production still requires an explicit
-// env key: a generated key lives only in the local DB and silently losing it
-// would make every stored API key undecryptable.
+// Production requires a stable server-only key for Supabase BYOK ciphertext.
+// Historical tests can still pass a development database to persist a test key;
+// the shipped agent server never creates that database.
 function isDevFallbackAllowed(): boolean {
   return process.env.NODE_ENV !== 'production';
 }
@@ -41,15 +38,15 @@ function missingKeyError(): Error {
     'ENCRYPTION_KEY is required in production for API key encryption. ' +
     `Set a ${KEY_HEX_LEN}-char hex key (generate one with: ` +
     `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"). ` +
-    'Outside production a local DB-stored key is auto-generated.',
+    'Use the same key on the frontend and agent server.',
   );
 }
 
 /**
  * Initialize encryption key from env or an explicit local-dev fallback.
- * Must be called after DB is initialized.
+ * The optional database is only used by legacy development/test fixtures.
  */
-export function initEncryptionKey(db: Database.Database): void {
+export function initEncryptionKey(db?: Database.Database): void {
   // 1. Check env var
   const envKey = process.env.ENCRYPTION_KEY;
   if (envKey && envKey !== PLACEHOLDER_KEY) {
@@ -59,6 +56,11 @@ export function initEncryptionKey(db: Database.Database): void {
 
   if (!isDevFallbackAllowed()) {
     throw missingKeyError();
+  }
+
+  if (!db) {
+    cachedKey = null;
+    return;
   }
 
   // 2. Check DB for persisted key
@@ -76,8 +78,11 @@ export function initEncryptionKey(db: Database.Database): void {
 }
 
 function getEncryptionKey(): Buffer {
+  if (!cachedKey && process.env.ENCRYPTION_KEY) {
+    cachedKey = parseHexKey(process.env.ENCRYPTION_KEY, 'env');
+  }
   if (!cachedKey) {
-    throw new Error('Encryption key not initialized. Call initEncryptionKey() first.');
+    throw new Error('ENCRYPTION_KEY is not configured. Set the same 64-character hex key on the frontend and agent server.');
   }
   return cachedKey;
 }

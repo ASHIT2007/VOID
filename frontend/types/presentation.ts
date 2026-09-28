@@ -202,6 +202,9 @@ export type Slide = {
   speakerNotes?: string;
   imageUrl?: string;
   imagePrompt?: string;
+  imageSubject?: string;
+  imageGeneration?: { revision: number; requestKey?: string; modelUsed?: string; generated?: boolean; status?: 'completed' | 'failed' | 'omitted'; message?: string; sourceUrl?: string };
+
   /** Safe focal point used by cover-crop rendering and retained per slide. */
   imagePosition?: "left top" | "center top" | "right top" | "left center" | "center" | "right center" | "left bottom" | "center bottom" | "right bottom";
   accentColor?: string;

@@ -23,6 +23,29 @@ export function posterTitleFromPrompt(prompt: string): string {
     .slice(0, 60);
 }
 
+/** Diffusion models supply the artwork; deterministic typography stays readable. */
+export function buildCloudflarePosterPrompt(prompt: string, size: PosterImageSize): string {
+  const brief = prompt.match(/User brief:\s*([\s\S]*?)\.\s*Create one finished/i)?.[1] || prompt;
+  return [
+    `Create editorial poster artwork for this brief: ${brief.slice(0, 1100)}.`,
+    'One recognizable focal subject, accurate defining features, purposeful composition, rich detail, balanced contrast and a coherent subject-specific palette.',
+    'Leave the bottom quarter as calm dark negative space for typography added later. Keep the face and key details in the upper two thirds.',
+    'Artwork only: absolutely no text, letters, logos, watermarks, frames, browser pages or mockups.',
+    size === '1536x1024' ? 'Landscape composition.' : size === '1024x1024' ? 'Square composition.' : 'Portrait composition.',
+  ].join(' ');
+}
+
+export function posterTitleLines(prompt: string): string[] {
+  const title = posterTitleFromPrompt(prompt);
+  const lines: string[] = [];
+  for (const word of title.split(/\s+/)) {
+    const last = lines.length - 1;
+    if (last < 0 || `${lines[last]} ${word}`.length > 24) lines.push(word);
+    else lines[last] += ` ${word}`;
+  }
+  return lines;
+}
+
 export function buildAiPosterPrompt(rawPrompt: string, size: PosterImageSize = "1024x1536"): string {
   const clean = rawPrompt.replace(/\s+/g, " ").trim();
   if (clean.includes(FINISHED_POSTER_MARKER) || clean.includes(FINISHED_INFOGRAPHIC_MARKER)) return clean;

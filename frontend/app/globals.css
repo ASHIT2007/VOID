@@ -175,6 +175,37 @@ body {
   overflow-x: auto;
 }
 .markdown-block { white-space: normal; }
+
+.answer-markdown { font-size: 15px; line-height: 1.75; max-width: 76ch; overflow-wrap: anywhere; padding-block: 0.15rem; }
+.answer-paragraph { margin: 0 0 1.05rem; white-space: normal; }
+.answer-paragraph:last-child { margin-bottom: 0; }
+.answer-heading { color: inherit; font-weight: 650; line-height: 1.35; letter-spacing: -0.015em; text-wrap: balance; }
+.answer-title { font-size: 1.6rem; margin: 0 0 1.1rem; }
+.answer-section { font-size: 1.3rem; margin: 1.8rem 0 0.75rem; }
+.answer-subsection { font-size: 1.1rem; margin: 1.35rem 0 0.6rem; }
+.answer-minor-heading { font-size: 1rem; margin: 1.1rem 0 0.5rem; }
+.answer-heading:first-child { margin-top: 0; }
+.answer-list { margin: 0.8rem 0 1.2rem; padding-left: 1.5rem; }
+.answer-unordered { list-style: disc outside; }
+.answer-ordered { list-style: decimal outside; }
+.answer-list-item { display: list-item; padding-left: 0.25rem; margin-block: 0.5rem; }
+.answer-list-item::marker { color: currentColor; font-weight: 500; }
+.answer-list-item > .answer-paragraph { margin-bottom: 0.6rem; }
+.answer-list-item > .answer-paragraph:last-child { margin-bottom: 0; }
+.answer-list .answer-list { margin-block: 0.5rem; }
+.answer-strong { font-weight: 650; }
+.answer-quote { border-left: 3px solid currentColor; padding-left: 1rem; margin: 1.25rem 0; opacity: 0.85; }
+.answer-divider { border-color: #d4d4d4; margin: 1.6rem 0; }
+.dark .answer-divider { border-color: #404040; }
+@media (min-width: 768px) { .answer-markdown { font-size: 16px; } }
+
+.answer-loading-dots { display: flex; align-items: center; gap: 3px; }
+.answer-loading-dots > span { width: 3px; height: 3px; border-radius: 50%; background: currentColor; animation: answer-loading-dot 1.05s ease-in-out infinite; }
+@keyframes answer-loading-dot { 0%, 70%, 100% { opacity: 0.3; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .answer-loading-dots > span { animation: none; opacity: 0.7; } }
+
+.chart-viewer { --chart-text: #262626; --chart-muted: #737373; --chart-grid: #d4d4d4; color: var(--chart-text); }
+.dark .chart-viewer { --chart-text: #f5f5f5; --chart-muted: #a3a3a3; --chart-grid: #404040; }
 .assistant-text-content .katex-display { overflow-x: auto; overflow-y: hidden; padding-block: 0.2em; }
 .code-block code { tab-size: 4; }
 

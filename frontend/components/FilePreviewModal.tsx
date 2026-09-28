@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import * as xlsx from "xlsx";
-import { supabase } from "@/lib/supabase";
+import { uploadAttachment } from "@/lib/attachment-upload";
 import { PresentationData } from "@/types/presentation";
 import { ReportData } from "@/types/report";
 import VisualDesignStudio from "./VisualDesignStudio";
@@ -66,7 +66,7 @@ export default function FilePreviewModal({ attachment, onClose }: FilePreviewMod
   const [publicFileUrl, setPublicFileUrl] = useState<string | null>(/^https?:\/\//i.test(attachment.url || '') ? attachment.url! : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [viewerEngine, setViewerEngine] = useState<"officelive" | "google" | "canvas">(attachment.url?.startsWith('/api/attachments/') ? 'canvas' : 'officelive');
+  const [viewerEngine, setViewerEngine] = useState<"officelive" | "google" | "canvas">('canvas');
   const [showThumbnails, setShowThumbnails] = useState(true);
 
   const nameLower = (attachment.name || "").toLowerCase();
@@ -97,22 +97,8 @@ export default function FilePreviewModal({ attachment, onClose }: FilePreviewMod
           }
           const blob = new Blob([bytes], { type: attachment.type || "application/octet-stream" });
 
-          const { data, error: uploadErr } = await supabase.storage
-            .from("chat-attachments")
-            .upload(fileName, blob, {
-              contentType: attachment.type || "application/octet-stream",
-              upsert: true,
-            });
-
-          if (!uploadErr && data) {
-            const { data: urlData } = supabase.storage
-              .from("chat-attachments")
-              .getPublicUrl(data.path);
-
-            if (urlData?.publicUrl) {
-              setPublicFileUrl(urlData.publicUrl);
-            }
-          }
+          const storedUrl = await uploadAttachment(blob, fileName);
+          setPublicFileUrl(storedUrl);
         } catch (err) {
           console.warn("Public URL generation error:", err);
         }
@@ -278,8 +264,8 @@ export default function FilePreviewModal({ attachment, onClose }: FilePreviewMod
   const fileUrl = publicFileUrl || (attachment.base64 ? `data:${attachment.type};base64,${attachment.base64}` : attachment.url);
 
   // Default to Office Live Viewer for PPTs if public URL is available or generated
-  const officeLiveUrl = publicFileUrl ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(publicFileUrl)}` : null;
-  const googleDocsUrl = publicFileUrl ? `https://docs.google.com/gview?url=${encodeURIComponent(publicFileUrl)}&embedded=true` : null;
+  const officeLiveUrl = publicFileUrl?.startsWith("https://") ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(publicFileUrl)}` : null;
+  const googleDocsUrl = publicFileUrl?.startsWith("https://") ? `https://docs.google.com/gview?url=${encodeURIComponent(publicFileUrl)}&embedded=true` : null;
   if (attachment.presentationData) {
     return (
       <AnimatePresence>
@@ -591,12 +577,7 @@ export default function FilePreviewModal({ attachment, onClose }: FilePreviewMod
 
             {/* Excel Table Viewer */}
             {isExcel && htmlContent && (
-              <div className="w-full h-full p-4 overflow-auto">
-                <div 
-                  className="excel-preview w-full h-full overflow-auto text-sm text-gray-200 bg-[#18181B] p-4 rounded-xl border border-[#27272A]"
-                  dangerouslySetInnerHTML={{ __html: htmlContent }} 
-                />
-              </div>
+              <iframe title="Spreadsheet preview" sandbox="" srcDoc={htmlContent} className="w-full h-full min-h-[400px] bg-white border-0" />
             )}
 
             {/* PDF Viewer */}

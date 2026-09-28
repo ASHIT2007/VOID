@@ -1,4 +1,5 @@
 import { tavily } from '@tavily/core';
+import { createHash } from 'node:crypto';
 import { registerTool, ToolResult, ToolOptions } from '../tool-registry.js';
 
 interface WebSearchArgs {
@@ -6,9 +7,11 @@ interface WebSearchArgs {
   maxResults?: number;
   searchDepth?: 'basic' | 'advanced';
   includeImages?: boolean;
+  timeRange?: 'day' | 'week' | 'month' | 'year';
+  topic?: 'general' | 'news';
 }
 
-type TavilyResult = { title?: string; url?: string; content?: string; score?: number };
+type TavilyResult = { title?: string; url?: string; content?: string; score?: number; published_date?: string; page_age?: string };
 type TavilyImage = string | { url?: string; description?: string; title?: string };
 
 const LOW_VALUE_IMAGE = /(?:placeholder|no[-_]?image|missing|default|blank|spacer|sprite|avatar|favicon|logo|icon|pixel)/i;
@@ -17,6 +20,13 @@ const LOW_VALUE_DOMAINS = /(?:^|\.)(?:facebook|instagram|tiktok|pinterest|quora|
 
 function boundedResults(value: number | undefined, fallback = 5): number {
   return Math.max(1, Math.min(12, Number.isFinite(value) ? Number(value) : fallback));
+}
+
+export function searchFreshness(query: string, news = false): { current: boolean; timeRange?: WebSearchArgs['timeRange'] } {
+  if (/\b(?:today|tonight|live|right now|latest score|current score)\b/i.test(query)) return { current: true, timeRange: 'day' };
+  if (news || /\b(?:latest|current|recent|news|this week|update)\b/i.test(query)) return { current: true, timeRange: 'week' };
+  if (/\b(?:next|upcoming|schedule|forecast|weather|release date)\b/i.test(query) || query.includes(String(new Date().getUTCFullYear()))) return { current: true, timeRange: 'year' };
+  return { current: false };
 }
 
 function focusedQueries(query: string): string[] {
@@ -46,7 +56,7 @@ function resultScore(result: TavilyResult, query: string): number {
   return (result.score || 0) + authority + Math.min(overlap * 0.04, 0.35) + Math.min((result.content || '').length / 5000, 0.2);
 }
 
-function rankAndDedupe(results: TavilyResult[], limit: number, query: string): TavilyResult[] {
+export function rankAndDedupe(results: TavilyResult[], limit: number, query: string): TavilyResult[] {
   const seen = new Set<string>();
   const domainCounts = new Map<string, number>();
   return results
@@ -56,7 +66,8 @@ function rankAndDedupe(results: TavilyResult[], limit: number, query: string): T
       try {
         const url = new URL(result.url!);
         const hostname = url.hostname.replace(/^www\./, '');
-        if (LOW_VALUE_DOMAINS.test(hostname) || (domainCounts.get(hostname) || 0) >= 2) return false;
+        if (searchFreshness(query).current && /(?:^|\.)wikipedia\.org$/i.test(hostname)) return false;
+        if (!['http:', 'https:'].includes(url.protocol) || LOW_VALUE_DOMAINS.test(hostname) || (domainCounts.get(hostname) || 0) >= 2) return false;
         url.hash = '';
         for (const key of [...url.searchParams.keys()]) {
           if (/^(?:utm_|ref$|source$|campaign$)/i.test(key)) url.searchParams.delete(key);
@@ -130,8 +141,18 @@ function formatResults(results: TavilyResult[], advanced: boolean): string {
   const snippetLimit = advanced ? 700 : 400;
   return results.map((result, index) => {
     const raw = (result.content || '').replace(/\s+/g, ' ').trim();
-    const snippet = raw.length > snippetLimit ? `${raw.slice(0, snippetLimit)}...` : raw;
-    return `[${index + 1}] ${result.title}\nURL: ${result.url}\nSnippet: ${snippet}`;
+    let snippet = raw;
+    if (raw.length > snippetLimit) {
+      const candidate = raw.slice(0, snippetLimit);
+      const lastPunct = Math.max(candidate.lastIndexOf('. '), candidate.lastIndexOf('! '), candidate.lastIndexOf('? '));
+      if (lastPunct > snippetLimit * 0.4) {
+        snippet = candidate.slice(0, lastPunct + 1);
+      } else {
+        const lastSpace = candidate.lastIndexOf(' ');
+        snippet = (lastSpace > 0 ? candidate.slice(0, lastSpace) : candidate).replace(/[,;:\-\s]+$/, '') + '...';
+      }
+    }
+    return `[${index + 1}] ${result.title}\nURL: ${result.url}${result.published_date || result.page_age ? `\nPublished/updated: ${result.published_date || result.page_age}` : ''}\nSnippet: ${snippet}`;
   }).join('\n\n');
 }
 
@@ -273,24 +294,106 @@ async function searchWikipediaWeb(query: string, limit: number): Promise<TavilyR
     .slice(0, limit);
 }
 
-async function duckDuckGoToolResult(query: string, maxResults: number | undefined, advanced: boolean): Promise<ToolResult> {
-  const limit = boundedResults(maxResults);
-  let results: TavilyResult[] = [];
-  try { results = await searchDuckDuckGoWeb(query, limit); } catch {}
-  if (results.length === 0) {
-    try { results = await searchBraveWeb(query, limit); } catch {}
+// Circuit-break a failing API briefly instead of spending every tool deadline
+// retrying a quota-exhausted account. Keys never enter logs or tool results.
+const providerCooldown = new Map<string, number>();
+const providerIssue = new Map<string, string>();
+const providerCredentials = new Map<string, string>();
+function providerAvailable(id: string): boolean {
+  const credential = id === 'Tavily' ? process.env.TAVILY_API_KEY : process.env.BRAVE_API_KEY;
+  const fingerprint = createHash('sha256').update(credential || '').digest('hex');
+  if (providerCredentials.get(id) !== fingerprint) {
+    providerCredentials.set(id, fingerprint);
+    providerCooldown.delete(id); providerIssue.delete(id);
   }
-  if (results.length === 0) {
-    try { results = await searchWikipediaWeb(query, limit); } catch {}
+  return (providerCooldown.get(id) || 0) <= Date.now();
+}
+function markProviderFailure(id: string, status?: number) {
+  const exhausted = status === 432 || status === 433;
+  providerCooldown.set(id, Date.now() + (exhausted ? 5 * 60_000 : status === 401 || status === 403 ? 60_000 : 20_000));
+  providerIssue.set(id, exhausted ? `${id} search quota is exhausted.` : status === 401 || status === 403 ? `${id} search credentials were rejected.` : `${id} search is temporarily unavailable.`);
+}
+
+async function searchBraveApi(query: string, limit: number, timeRange?: WebSearchArgs['timeRange']): Promise<TavilyResult[]> {
+  const endpoint = new URL('https://api.search.brave.com/res/v1/web/search');
+  endpoint.searchParams.set('q', query); endpoint.searchParams.set('count', String(Math.min(20, limit * 2)));
+  if (timeRange) endpoint.searchParams.set('freshness', { day: 'pd', week: 'pw', month: 'pm', year: 'py' }[timeRange]);
+  const response = await fetch(endpoint, { headers: { Accept: 'application/json', 'X-Subscription-Token': process.env.BRAVE_API_KEY! }, signal: AbortSignal.timeout(8_000) });
+  if (!response.ok) { markProviderFailure('Brave', response.status); return []; }
+  const payload = await response.json() as { web?: { results?: Array<{ title?: string; url?: string; description?: string; page_age?: string }> } };
+  return (payload.web?.results || []).map(item => ({ title: item.title, url: item.url, content: plainHtml(item.description || ''), page_age: item.page_age }));
+}
+
+async function keylessWebResults(query: string, limit: number, current: boolean): Promise<TavilyResult[]> {
+  const lookup = current ? `${query} -site:wikipedia.org` : query;
+  const attempts = await Promise.allSettled([searchDuckDuckGoWeb(lookup, limit), searchBraveWeb(lookup, limit)]);
+  return rankAndDedupe(attempts.flatMap(result => result.status === 'fulfilled' ? result.value : []), limit, current ? `latest ${query}` : query);
+}
+
+function withinFreshness(results: TavilyResult[], timeRange?: WebSearchArgs['timeRange']): TavilyResult[] {
+  if (!timeRange) return results;
+  const windowMs = { day: 1, week: 7, month: 31, year: 366 }[timeRange] * 86_400_000;
+  return results.filter(result => {
+    const date = Date.parse(result.published_date || result.page_age || '');
+    // Undated primary pages can still be useful leads, but are never claimed
+    // fresh just because they were retrieved today.
+    return !Number.isFinite(date) || Date.now() - date <= windowMs;
+  });
+}
+
+function searchResult(results: TavilyResult[], advanced: boolean, provider: string, background = false): ToolResult {
+  const sources = results.map(result => ({ url: result.url!, title: result.title!, content: result.content || '' }));
+  return { content: `Search provider: ${provider}. Retrieved at ${new Date().toISOString()}. ${background ? 'Only background encyclopedia information is available; current facts have NOT been verified.' : 'Use source publication/update dates to assess currency; retrieval time alone does not establish freshness.'}\n\n${formatResults(results, advanced)}`, sources };
+}
+
+export async function searchWeb(args: WebSearchArgs): Promise<ToolResult> {
+  const query = typeof args.query === 'string' ? args.query.trim().slice(0, 1000) : '';
+  if (!query) return { content: 'A search query is required.', error: 'query_missing' };
+  const advanced = args.searchDepth === 'advanced';
+  const limit = boundedResults(args.maxResults, advanced ? 8 : 5);
+  const freshness = searchFreshness(query, args.topic === 'news');
+  const timeRange = args.timeRange || freshness.timeRange;
+  const current = freshness.current || Boolean(args.timeRange);
+  if (process.env.TAVILY_API_KEY && providerAvailable('Tavily')) {
+    try {
+      const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
+      const queries = advanced ? focusedQueries(query).slice(0, 2) : [query];
+      const attempts = await Promise.allSettled(queries.map(focusedQuery => tvly.search(focusedQuery, {
+        searchDepth: advanced ? 'advanced' : 'basic', maxResults: Math.min(12, limit + 3),
+        topic: args.topic || 'general', ...(timeRange ? { timeRange } : {}),
+        ...(current ? { excludeDomains: ['wikipedia.org'] } : {}),
+        includeImages: args.includeImages === true, includeImageDescriptions: args.includeImages === true,
+        timeout: 8,
+      })));
+      const responses = attempts.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+      const results = rankAndDedupe(withinFreshness(responses.flatMap(response => response.results || []) as TavilyResult[], timeRange), limit, current && !freshness.current ? `latest ${query}` : query);
+      if (results.length) {
+        providerIssue.delete('Tavily');
+        const images = args.includeImages ? await validatedImages(responses.flatMap(response => response.images || []) as TavilyImage[], query) : [];
+        return { ...searchResult(results, advanced, 'Tavily'), images };
+      }
+      const failure = attempts.find(result => result.status === 'rejected');
+      if (failure?.status === 'rejected') {
+        const status = Number(failure.reason?.status || failure.reason?.response?.status || String(failure.reason?.message || '').match(/\b(401|403|429|432|433|500|502|503)\b/)?.[1]) || undefined;
+        markProviderFailure('Tavily', status);
+      }
+    } catch { markProviderFailure('Tavily'); }
   }
-  if (results.length === 0) results = await searchDuckDuckGoInstant(query, limit);
-  if (results.length === 0) return { content: 'No web results found.' };
-  const sources = results.map((result) => ({
-    url: result.url!,
-    title: result.title!,
-    content: result.content || '',
-  }));
-  return { content: formatResults(results, advanced), sources };
+  if (process.env.BRAVE_API_KEY && providerAvailable('Brave')) {
+    try {
+      const results = rankAndDedupe(withinFreshness(await searchBraveApi(query, limit, timeRange), timeRange), limit, current && !freshness.current ? `latest ${query}` : query);
+      if (results.length) return searchResult(results, advanced, 'Brave Search API');
+    } catch { markProviderFailure('Brave'); }
+  }
+  const results = await keylessWebResults(query, limit, current);
+  if (results.length) return searchResult(results, advanced, 'DuckDuckGo / Brave web index');
+  const issues = [...providerIssue.values()].join(' ');
+  if (current) return { content: `${issues} Fresh web results are unavailable. The requested current information could not be verified; encyclopedia pages are not a substitute for live scores, upcoming schedules or news.`, error: 'fresh_search_unavailable', sources: [] };
+  let background: TavilyResult[] = [];
+  try { background = await searchWikipediaWeb(query, Math.min(limit, 2)); } catch {}
+  if (!background.length) { try { background = await searchDuckDuckGoInstant(query, Math.min(limit, 2)); } catch {} }
+  return background.length ? searchResult(rankAndDedupe(background, Math.min(limit, 2), query), advanced, 'Encyclopedia fallback', true)
+    : { content: `${issues} No attributable web results were available.`, error: 'search_unavailable', sources: [] };
 }
 
 export function registerWebSearchTools(): void {
@@ -310,58 +413,15 @@ export function registerWebSearchTools(): void {
             query: { type: 'string', description: 'The search query' },
             maxResults: { type: 'number', description: 'Maximum number of ranked results to return (1-12, default 5)' },
             searchDepth: { type: 'string', enum: ['basic', 'advanced'], description: 'Use advanced for multi-query, deeper retrieval and source ranking.' },
-            includeImages: { type: 'boolean', description: 'Return validated, relevant image candidates when useful.' }
+            includeImages: { type: 'boolean', description: 'Return validated image candidates only for a separate approved visual request.' },
+            timeRange: { type: 'string', enum: ['day', 'week', 'month', 'year'], description: 'Freshness window. Use day for live scores/today, week for recent news, year for upcoming schedules.' },
+            topic: { type: 'string', enum: ['general', 'news'], description: 'Use news for current reporting; general for official schedules and reference facts.' }
           },
           required: ['query']
         }
       }
     },
-    async (args: Record<string, unknown>): Promise<ToolResult> => {
-      const { query, maxResults = 5, searchDepth = 'basic', includeImages = false } = args as unknown as WebSearchArgs;
-      
-      if (!query) {
-        return { content: 'Error: query is required.', error: 'query missing' };
-      }
-
-      try {
-        const apiKey = process.env.TAVILY_API_KEY;
-        if (apiKey) {
-          try {
-            const tvly = tavily({ apiKey });
-            const advanced = searchDepth === 'advanced';
-            const limit = boundedResults(maxResults, advanced ? 8 : 5);
-            const queries = advanced ? focusedQueries(query) : [query];
-            const responses = await Promise.all(queries.map((focusedQuery) => tvly.search(focusedQuery, {
-              searchDepth: advanced ? 'advanced' : 'basic',
-              maxResults: advanced ? Math.min(6, limit) : limit,
-              includeImages,
-              includeImageDescriptions: includeImages,
-            })));
-            const results = rankAndDedupe(responses.flatMap((response) => (response.results || []) as TavilyResult[]), limit, query);
-            if (results.length === 0) {
-              return await duckDuckGoToolResult(query, maxResults, advanced);
-            }
-            const images = includeImages
-              ? await validatedImages(responses.flatMap((response) => (response.images || []) as TavilyImage[]), query)
-              : [];
-            const sources = results.map((result) => ({ url: result.url!, title: result.title!, content: result.content || '' }));
-            return { content: formatResults(results, advanced), images, sources };
-          } catch {
-            // An exhausted or temporarily unavailable paid provider must not
-            // turn a healthy keyless web index into a failed search.
-            return await duckDuckGoToolResult(query, maxResults, searchDepth === 'advanced');
-          }
-        } else {
-          // The Instant Answer API is not a general web index and frequently
-          // returns nothing for people, places, products, and niche entities.
-          // Use the non-JavaScript result page first, retaining Instant Answer
-          // only as a secondary service fallback.
-          return await duckDuckGoToolResult(query, maxResults, searchDepth === 'advanced');
-        }
-      } catch (err: any) {
-        return { content: `Error during search: ${err.message}`, error: err.message };
-      }
-    },
+    async (args: Record<string, unknown>): Promise<ToolResult> => searchWeb(args as unknown as WebSearchArgs),
     options
   );
 
@@ -383,30 +443,7 @@ export function registerWebSearchTools(): void {
         }
       }
     },
-    async (args: Record<string, unknown>): Promise<ToolResult> => {
-      const { query, maxResults = 5, searchDepth = 'advanced', includeImages = false } = args as unknown as WebSearchArgs;
-      if (!query) {
-        return { content: 'Error: query is required.', error: 'query missing' };
-      }
-      try {
-        const apiKey = process.env.TAVILY_API_KEY;
-        if (apiKey) {
-          const tvly = tavily({ apiKey });
-          const response = await tvly.search(query, { searchDepth, topic: 'news', maxResults: boundedResults(maxResults), includeImages });
-          
-          if (!response || !response.results || response.results.length === 0) {
-            return { content: 'No news found.' };
-          }
-          const results = rankAndDedupe(response.results as TavilyResult[], boundedResults(maxResults), query);
-          const images = includeImages ? await validatedImages((response.images || []) as TavilyImage[], query) : [];
-          const sources = results.map((result) => ({ url: result.url!, title: result.title!, content: result.content || '' }));
-          return { content: formatResults(results, true), images, sources };
-        }
-        return { content: 'Error: TAVILY_API_KEY is required for news search.', error: 'missing key' };
-      } catch (err: any) {
-        return { content: `Error during news search: ${err.message}`, error: err.message };
-      }
-    },
+    async (args: Record<string, unknown>): Promise<ToolResult> => searchWeb({ ...args, query: String(args.query || ''), topic: 'news', searchDepth: 'advanced', timeRange: 'week' } as WebSearchArgs),
     options
   );
 

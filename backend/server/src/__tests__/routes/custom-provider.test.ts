@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import http from 'node:http';
 import type { Express } from 'express';
-import { createApp } from '../../app.js';
+import { createApp } from '../helpers/legacy-app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
 import { routeRequest } from '../../services/router.js';
 import { resolveProvider, getProvider } from '../../providers/index.js';

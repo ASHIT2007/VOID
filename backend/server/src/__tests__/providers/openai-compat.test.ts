@@ -18,6 +18,63 @@ describe('OpenAICompatProvider', () => {
     expect(provider.name).toBe('TestProvider');
   });
 
+  it('caps follow-up output to reported token headroom without sharing it across keys or models', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'answer' } }] }), {
+        headers: bodies.length === 1 ? { 'x-ratelimit-remaining-tokens': '700', 'x-ratelimit-reset-tokens': '7.66s' } : {},
+      });
+    });
+    await provider.chatCompletion('key-a', [], 'model-a', { max_tokens: 4000 });
+    await provider.chatCompletion('key-a', [], 'model-a', { max_tokens: 4000 });
+    await provider.chatCompletion('key-b', [], 'model-a', { max_tokens: 4000 });
+    await provider.chatCompletion('key-a', [], 'model-b', { max_tokens: 4000 });
+    await provider.chatCompletion('key-a', [], 'model-a', { max_tokens: 32 });
+    expect(bodies[0].max_tokens).toBe(4000);
+    expect(Number(bodies[1].max_tokens)).toBeGreaterThanOrEqual(128);
+    expect(Number(bodies[1].max_tokens)).toBeLessThan(700);
+    expect(bodies[2].max_tokens).toBe(4000);
+    expect(bodies[3].max_tokens).toBe(4000);
+    expect(bodies[4].max_tokens).toBe(32);
+  });
+
+  it('expires a provider token snapshot at its reported reset time', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'answer' } }] }), {
+        headers: bodies.length === 1 ? { 'x-ratelimit-remaining-tokens': '700', 'x-ratelimit-reset-tokens': '1s' } : {},
+      });
+    });
+    await provider.chatCompletion('key', [], 'model', { max_tokens: 4000 });
+    now.mockReturnValue(2001);
+    await provider.chatCompletion('key', [], 'model', { max_tokens: 4000 });
+    expect(bodies[1].max_tokens).toBe(4000);
+    now.mockRestore();
+  });
+
+  it('identifies daily token exhaustion without exposing the upstream body', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { message: 'Rate limit reached for account-private-id on tokens per day (TPD).' } }), { status: 429 }));
+    const error = await provider.chatCompletion('private-key', [], 'model').catch(failure => failure as Error);
+    expect(error).toMatchObject({ message: 'TestProvider API error 429 (tokens per day)', status: 429 });
+    expect(String(error)).not.toContain('account-private-id');
+    expect(String(error)).not.toContain('private-key');
+  });
+
+  it('passes reasoning effort only to compatible Groq GPT-OSS models', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'answer' } }] }));
+    });
+    await provider.chatCompletion('key', [], 'openai/gpt-oss-20b', { reasoning_effort: 'low', max_tokens: 768 });
+    await provider.chatCompletion('key', [], 'another-model', { reasoning_effort: 'low' });
+    expect(bodies[0]).toMatchObject({ reasoning_effort: 'low', max_tokens: 768 });
+    expect(bodies[1]).not.toHaveProperty('reasoning_effort');
+  });
+
   it('should call API with correct URL and headers', async () => {
     let capturedUrl = '';
     let capturedHeaders: Record<string, string> = {};
@@ -102,7 +159,7 @@ describe('OpenAICompatProvider', () => {
 
     await expect(
       provider.chatCompletion('key', [{ role: 'user', content: 'hi' }], 'model')
-    ).rejects.toThrow(/Too many requests/);
+    ).rejects.toThrow(/TestProvider API error 429/);
   });
 
   it('explains a non-JSON 200 body instead of surfacing the raw parse error (#189)', async () => {

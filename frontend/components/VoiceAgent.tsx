@@ -4,12 +4,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion";
 import { MicOff } from "lucide-react";
 import VoidVisualizer, { VoiceVisualState } from "./VoidVisualizer";
-import { getBackendUrl } from "@/lib/backend";
+import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from '@/lib/voice-config';
+import { startNativeVoice, type NativeSession, type NativeVoiceHandle } from '@/lib/voice-native';
 import { supabase } from "@/lib/supabase";
 import { normalizeVoiceTranscript } from "@/lib/voice-transcript";
-import { inferSpeechLanguage } from "@/lib/voice-language";
-import { compactVoiceHistory, VOICE_CONVERSATION_POLICY } from "@/lib/voice-conversation";
+import { inferSpeechLanguage, detectSpeechLanguage, normalizeSpeechLanguage, deepgramSpeechLanguage } from "@/lib/voice-language";
+import { compactVoiceHistory } from "@/lib/voice-conversation";
+import { StreamingSpeechQueue } from "@/lib/voice-stream";
+import { playSpeechAudio } from "@/lib/voice-audio";
 import { isVoiceExitCommand, isVoiceStopCommand } from "@/lib/voice-commands";
+import { workspaceStreamEvent } from '@/lib/workspace/device-store';
 
 /**
  * VOID Voice Orb UI Tuning Parameters
@@ -221,12 +225,12 @@ function isAbortError(error: unknown): boolean {
     : error instanceof Error && error.name === "AbortError";
 }
 
-function browserVoiceFor(text: string): SpeechSynthesisVoice | undefined {
+function browserVoiceFor(text: string, contextLanguage?: string): SpeechSynthesisVoice | undefined {
   const voices = window.speechSynthesis?.getVoices?.() || [];
   if (!voices.length) return undefined;
   const requestedLanguage = inferSpeechLanguage(
     text,
-    document.documentElement.lang || navigator.language || "en",
+    contextLanguage || navigator.language || "en",
   );
   const naturalName = /(?:natural|neural|aria|jenny|sonia|samantha|serena|google uk|google us|microsoft.*online)/i;
   const roboticName = /(?:espeak|festival|compact|desktop)/i;
@@ -235,11 +239,12 @@ function browserVoiceFor(text: string): SpeechSynthesisVoice | undefined {
     return language === requestedLanguage || language.startsWith(`${requestedLanguage}-`);
   });
   // Do not force a regional-language utterance through an unrelated English voice.
-  const candidates = languageMatches.length ? languageMatches : requestedLanguage === "en" ? voices : [];
+  const candidates = languageMatches;
   return [...candidates].sort((left, right) => {
     const score = (voice: SpeechSynthesisVoice) => {
       const language = voice.lang.toLowerCase();
       return (language === requestedLanguage || language.startsWith(`${requestedLanguage}-`) ? 10 : 0)
+        + (contextLanguage && language === contextLanguage.toLowerCase() ? 20 : 0)
         + (naturalName.test(voice.name) ? 7 : 0)
         + (voice.localService ? 3 : 0)
         + (voice.default ? 1 : 0)
@@ -309,6 +314,11 @@ export default function VoiceAgent({
   const [muted, setMuted] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const conversationLanguageRef = useRef('');
+  const voiceConfigRef = useRef<VoiceConfig>(DEFAULT_VOICE_CONFIG);
+  const nativeVoiceRef = useRef<NativeVoiceHandle | null>(null);
+  const voiceStartupRef = useRef<AbortController | null>(null);
+  const speechQueueRef = useRef<StreamingSpeechQueue | null>(null);
   const [instanceId] = useState(() => ++instanceCounter);
   const mountedRef = useRef(true);
   const stateRef = useRef<VoiceState>("idle");
@@ -356,7 +366,6 @@ export default function VoiceAgent({
   const lastSubmittedRef = useRef({ text: "", at: 0 });
   const pttReleasePendingRef = useRef(false);
   const llmAbortRef = useRef<AbortController | null>(null);
-  const ttsAbortRef = useRef<AbortController | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsAudioUrlRef = useRef<string | null>(null);
   const turnIdRef = useRef(0);
@@ -417,6 +426,7 @@ export default function VoiceAgent({
   }, []);
 
   const getOutputVolume = useCallback(() => {
+    if (nativeVoiceRef.current) return nativeVoiceRef.current.getOutputVolume();
     // The Web Speech API deliberately does not expose its audio stream to an
     // AnalyserNode. Drive the visualizer from smooth syllable/boundary motion
     // so local, quota-free speech remains visibly expressive.
@@ -488,10 +498,10 @@ export default function VoiceAgent({
   }, [onAudioEnd, setUserSpeaking]);
 
   const stopAudioOutput = useCallback((notify = true) => {
+    speechQueueRef.current?.cancel();
+    speechQueueRef.current = null;
     previousSpeechTextRef.current = "";
     browserSpeechActivityRef.current.active = false;
-    ttsAbortRef.current?.abort();
-    ttsAbortRef.current = null;
     if (ttsAudioRef.current) {
       ttsAudioRef.current.pause();
       ttsAudioRef.current.removeAttribute("src");
@@ -518,148 +528,88 @@ export default function VoiceAgent({
     stopAudioOutput(notify);
   }, [stopAudioOutput]);
 
-  const speakWithBrowser = useCallback((text: string, turnId: number) => {
-    if (turnId !== turnIdRef.current || !text.trim() || !("speechSynthesis" in window)) {
-      completePlayback(turnId);
-      return;
-    }
+  const speakWithBrowser = useCallback((text: string, turnId: number, finish = true, signal?: AbortSignal): Promise<void> => {
     const spokenText = cleanTextForSpeech(text);
-    const utterance = new SpeechSynthesisUtterance(spokenText);
-    const voice = browserVoiceFor(spokenText);
-    if (voice) utterance.voice = voice;
-    utterance.lang = voice?.lang || inferSpeechLanguage(spokenText, navigator.language);
-    const prosody = browserProsody(spokenText);
-    utterance.rate = prosody.rate;
-    utterance.pitch = prosody.pitch;
-    utterance.volume = prosody.volume;
-    const seed = [...spokenText].reduce((value, character) => (value * 31 + character.charCodeAt(0)) % 997, 17) / 97;
-    utterance.onstart = () => {
-      if (turnId !== turnIdRef.current) return;
-      browserSpeechActivityRef.current = {
-        active: true,
-        startedAt: performance.now(),
-        boundaryAt: performance.now(),
-        seed,
-        intensity: prosody.intensity,
+    if (turnId !== turnIdRef.current || !spokenText || signal?.aborted) return Promise.resolve();
+    const language = conversationLanguageRef.current || navigator.language;
+    const voice = (voiceConfigRef.current.ttsVoice ? window.speechSynthesis?.getVoices().find(item => item.voiceURI === voiceConfigRef.current.ttsVoice) : undefined) || browserVoiceFor(spokenText, language);
+    if (!voice || !("speechSynthesis" in window)) {
+      const message = 'A native voice for this language is unavailable. Connect a multilingual voice provider in Settings.';
+      if (!finish) return Promise.reject(new Error(message));
+      completePlayback(turnId); setErrorMessage(message); return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const utterance = new SpeechSynthesisUtterance(spokenText);
+      utterance.voice = voice; utterance.lang = voice.lang;
+      const prosody = browserProsody(spokenText);
+      utterance.rate = prosody.rate; utterance.pitch = prosody.pitch; utterance.volume = prosody.volume;
+      const seed = [...spokenText].reduce((value, character) => (value * 31 + character.charCodeAt(0)) % 997, 17) / 97;
+      const cleanup = () => { signal?.removeEventListener('abort', interrupted); utterance.onend = null; utterance.onerror = null; };
+      const interrupted = () => { cleanup(); window.speechSynthesis.cancel(); reject(new DOMException('Speech interrupted', 'AbortError')); };
+      signal?.addEventListener('abort', interrupted, { once: true });
+      utterance.onstart = () => {
+        if (turnId !== turnIdRef.current) return;
+        browserSpeechActivityRef.current = { active: true, startedAt: performance.now(), boundaryAt: performance.now(), seed, intensity: prosody.intensity };
+        previousSpeechTextRef.current = `${previousSpeechTextRef.current} ${spokenText}`.slice(-1200);
+        if (!speechStartedRef.current) { speechStartedRef.current = true; playbackStartedAtRef.current = Date.now(); onAudioStart?.(spokenText); }
+        transition('speaking');
       };
-      speechStartedRef.current = true;
-      playbackStartedAtRef.current = Date.now();
-      transition("speaking");
-      onAudioStart?.(text);
-    };
-    utterance.onboundary = () => {
-      if (turnId === turnIdRef.current) browserSpeechActivityRef.current.boundaryAt = performance.now();
-    };
-    utterance.onend = () => {
-      if (turnId !== turnIdRef.current) return;
-      browserSpeechActivityRef.current.active = false;
-      completePlayback(turnId);
-    };
-    utterance.onerror = () => {
-      if (turnId !== turnIdRef.current) return;
-      browserSpeechActivityRef.current.active = false;
-      completePlayback(turnId);
-    };
-    window.speechSynthesis.speak(utterance);
+      utterance.onboundary = () => { if (turnId === turnIdRef.current) browserSpeechActivityRef.current.boundaryAt = performance.now(); };
+      utterance.onend = () => { cleanup(); browserSpeechActivityRef.current.active = false; if (finish) completePlayback(turnId); resolve(); };
+      utterance.onerror = () => { cleanup(); browserSpeechActivityRef.current.active = false; if (finish) { completePlayback(turnId); resolve(); } else reject(new Error('Native voice playback failed')); };
+      window.speechSynthesis.speak(utterance);
+    });
   }, [completePlayback, onAudioStart, transition]);
 
-  const speakContinuously = useCallback(async (text: string, turnId: number) => {
+  const prepareSpeech = useCallback(async (text: string, turnId: number, signal: AbortSignal): Promise<() => Promise<void>> => {
     const spokenText = cleanTextForSpeech(text);
-    if (turnId !== turnIdRef.current || !spokenText) {
-      completePlayback(turnId);
-      return;
-    }
-
-    const controller = new AbortController();
-    ttsAbortRef.current?.abort();
-    ttsAbortRef.current = controller;
-    previousSpeechTextRef.current = spokenText.slice(-1200);
-    let fallbackStarted = false;
-
+    if (!spokenText) return async () => {};
+    if (voiceConfigRef.current.ttsProvider === 'browser') return () => speakWithBrowser(spokenText, turnId, false, signal);
+    const previousText = priorAssistantSpeechRef.current;
+    priorAssistantSpeechRef.current = `${previousText} ${spokenText}`.slice(-1200);
+    let response: Response;
     try {
-      const response = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: spokenText,
-          previousText: priorAssistantSpeechRef.current,
-          language: inferSpeechLanguage(spokenText, navigator.language || "en"),
-        }),
-        signal: controller.signal,
+      const { data: { session } } = await supabase.auth.getSession();
+      response = await fetch('/api/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { 'x-void-user-token': session.access_token } : {}) },
+        body: JSON.stringify({ text: spokenText, previousText, language: inferSpeechLanguage(spokenText, conversationLanguageRef.current || navigator.language || 'en') }), signal,
       });
-      if (!response.ok) throw new Error(`TTS returned ${response.status}`);
-      const audioBlob = await response.blob();
-      if (turnId !== turnIdRef.current || controller.signal.aborted) return;
-      if (!audioBlob.type.startsWith("audio/")) throw new Error("TTS did not return audio");
-
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      audio.preload = "auto";
-      ttsAudioRef.current = audio;
-      ttsAudioUrlRef.current = audioUrl;
-      const cleanup = () => {
-        if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-        if (ttsAudioUrlRef.current === audioUrl) ttsAudioUrlRef.current = null;
-        URL.revokeObjectURL(audioUrl);
-      };
-      audio.onplaying = () => {
-        if (turnId !== turnIdRef.current) return;
-        browserSpeechActivityRef.current = {
-          active: true,
-          startedAt: performance.now(),
-          boundaryAt: performance.now(),
-          seed: 0.37,
-          intensity: 1,
-        };
-        if (!speechStartedRef.current) {
-          speechStartedRef.current = true;
-          playbackStartedAtRef.current = Date.now();
-          transition("speaking");
-          onAudioStart?.(spokenText);
-        }
-      };
-      audio.onended = () => {
-        cleanup();
-        if (turnId !== turnIdRef.current) return;
-        browserSpeechActivityRef.current.active = false;
-        completePlayback(turnId);
-      };
-      audio.onerror = () => {
-        cleanup();
-        if (turnId !== turnIdRef.current) return;
-        browserSpeechActivityRef.current.active = false;
-        if (!fallbackStarted && turnId === turnIdRef.current) {
-          fallbackStarted = true;
-          speakWithBrowser(spokenText, turnId);
-        }
-      };
-      await audio.play();
+      if (!response.ok || !response.headers.get('content-type')?.startsWith('audio/')) { const failure = await response.json().catch(() => ({})); throw new Error(typeof failure.error === 'string' ? failure.error : 'Your selected speech provider is unavailable. Check Voice Agent settings.'); }
     } catch (error) {
-      if (turnId !== turnIdRef.current || controller.signal.aborted || isAbortError(error)) return;
-      const failedAudio = ttsAudioRef.current;
-      if (failedAudio) {
-        failedAudio.onerror = null;
-        failedAudio.onended = null;
-        failedAudio.pause();
-        ttsAudioRef.current = null;
-      }
-      if (ttsAudioUrlRef.current) {
-        URL.revokeObjectURL(ttsAudioUrlRef.current);
-        ttsAudioUrlRef.current = null;
-      }
-      if (!fallbackStarted) {
-        fallbackStarted = true;
-        speakWithBrowser(spokenText, turnId);
-      }
-    } finally {
-      if (ttsAbortRef.current === controller) ttsAbortRef.current = null;
+      if (signal.aborted || isAbortError(error)) throw error;
+      throw error;
     }
-  }, [completePlayback, onAudioStart, speakWithBrowser, transition]);
+    return async () => {
+      if (signal.aborted || turnId !== turnIdRef.current) return;
+      const audio = new Audio(); audio.preload = 'auto'; ttsAudioRef.current = audio;
+      let started = false;
+      audio.onplaying = () => {
+        if (signal.aborted || turnId !== turnIdRef.current) return;
+        if (started) return;
+        started = true;
+        browserSpeechActivityRef.current = { active: true, startedAt: performance.now(), boundaryAt: performance.now(), seed: 0.37, intensity: 1 };
+        previousSpeechTextRef.current = `${previousSpeechTextRef.current} ${spokenText}`.slice(-1200);
+        if (!speechStartedRef.current) { speechStartedRef.current = true; playbackStartedAtRef.current = Date.now(); onAudioStart?.(spokenText); }
+        transition('speaking');
+      };
+      try {
+        await playSpeechAudio(response, audio, signal, url => { ttsAudioUrlRef.current = url; });
+      } catch (error) {
+        if (signal.aborted || turnId !== turnIdRef.current || isAbortError(error)) return;
+        audio.pause();
+        throw error;
+      } finally {
+        audio.onplaying = null; audio.pause(); audio.removeAttribute('src'); audio.load();
+        if (ttsAudioRef.current === audio) { ttsAudioRef.current = null; ttsAudioUrlRef.current = null; browserSpeechActivityRef.current.active = false; }
+      }
+    };
+  }, [onAudioStart, speakWithBrowser, transition]);
 
-  const finishSpeechStream = useCallback((turnId: number, fullResponse: string) => {
-    if (turnId !== turnIdRef.current) return;
-    void speakContinuously(fullResponse, turnId);
-  }, [speakContinuously]);
+  const makeSpeechQueue = useCallback((turnId: number) => new StreamingSpeechQueue(
+    (text, signal) => prepareSpeech(text, turnId, signal),
+    () => completePlayback(turnId),
+    error => { if (turnId === turnIdRef.current) { completePlayback(turnId); setErrorMessage(error instanceof Error ? error.message : 'Voice playback interrupted'); } },
+  ), [completePlayback, prepareSpeech]);
 
   const recordUsage = useCallback(() => {
     if (!setSessionUsage) return;
@@ -695,6 +645,8 @@ export default function VoiceAgent({
       && Date.now() - lastSubmittedRef.current.at < 1600;
     if (duplicate) return;
     lastSubmittedRef.current = { text, at: Date.now() };
+    const detectedLanguage = detectSpeechLanguage(text);
+    if (detectedLanguage) conversationLanguageRef.current = detectedLanguage;
 
     cancelActiveTurn(false);
     const turnId = turnIdRef.current;
@@ -714,10 +666,9 @@ export default function VoiceAgent({
 
     const controller = new AbortController();
     llmAbortRef.current = controller;
-    // The final answer is synthesized as one continuous audio stream. Avoid
-    // filler utterances that can overlap or introduce a language mismatch.
     priorAssistantSpeechRef.current = historyRef.current.filter((message) => message.role === "assistant").at(-1)?.content || "";
     const requestHistory = compactVoiceHistory([...historyRef.current, { role: "user" as const, content: text }]);
+    speechQueueRef.current = makeSpeechQueue(turnId);
 
     try {
       const requestPayload = {
@@ -727,38 +678,21 @@ export default function VoiceAgent({
         reasoningEffort: "auto",
         isWebSearch: true,
         isVoice: true,
+        voiceLanguage: conversationLanguageRef.current,
         conversationId: conversationId || `voice-${instanceId}`,
       };
-      let response = await fetch("/api/chat", {
+      const { data: { session: voiceSession } } = await supabase.auth.getSession();
+      const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(voiceSession?.access_token ? { 'x-void-user-token': voiceSession.access_token } : {}) },
         body: JSON.stringify(requestPayload),
         signal: controller.signal,
       });
 
-      // A Next dev/build output collision used to leave the page online while
-      // its route handlers returned a framework 404. The isolated distDir in
-      // next.config prevents that condition; this direct, CORS-safe backend
-      // path keeps an already-open voice session alive during a dev restart.
-      if (response.status === 404) {
-        console.warn("Voice chat route returned 404; retrying through the local agent backend.");
-        response = await fetch(`${getBackendUrl()}/api/agent/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId: `${conversationId || `voice-${instanceId}`}:${Date.now()}`,
-            message: text,
-            conversationContext: JSON.stringify(requestHistory.slice(0, -1)),
-            reasoningEffort: "auto",
-            mode: "normal",
-            isVoice: true,
-            maxAgents: 1,
-            artifactInstructions: VOICE_CONVERSATION_POLICY,
-          }),
-          signal: controller.signal,
-        });
+      if (!response.ok || !response.body) {
+        const failure = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(failure?.error || `Assistant returned ${response.status}`);
       }
-      if (!response.ok || !response.body) throw new Error(`Assistant returned ${response.status}`);
       if (turnId !== turnIdRef.current) return;
       transition("thinking");
 
@@ -784,8 +718,11 @@ export default function VoiceAgent({
           uiName?: string;
           fullText?: string;
         };
+        workspaceStreamEvent(event);
         if (event.type === "error") throw new Error(event.message || event.error || "Voice response failed");
         if (event.type === "reset" || event.type === "response_reset") {
+          stopAudioOutput(true);
+          speechQueueRef.current = makeSpeechQueue(turnId);
           fullResponse = "";
           onResponseUpdate?.("", false, responseMeta);
           return;
@@ -849,6 +786,7 @@ export default function VoiceAgent({
         if (event.type !== "text" && event.type !== "text_delta") return;
         if (!event.content) return;
         fullResponse += event.content;
+        speechQueueRef.current?.push(event.content);
         responseTextRef.current = fullResponse;
         onResponseUpdate?.(fullResponse, false, responseMeta);
       };
@@ -872,17 +810,18 @@ export default function VoiceAgent({
       historyRef.current = completedHistory;
       if (onResponseUpdate) onResponseUpdate(fullResponse.trim(), true, responseMeta);
       else onTurnComplete?.(text, fullResponse.trim());
-      finishSpeechStream(turnId, spokenResponse);
+      speechQueueRef.current?.finish();
     } catch (error: unknown) {
       if (turnId !== turnIdRef.current || isAbortError(error)) return;
+      stopAudioOutput(true);
       console.error("Voice response error:", error);
-      setErrorMessage("Connection interrupted");
+      setErrorMessage(error instanceof Error ? error.message.slice(0, 180) : "Connection interrupted");
       transition("error");
       speakWithBrowser("I hit a connection problem. You can keep talking or type instead.", turnId);
     } finally {
       if (llmAbortRef.current === controller) llmAbortRef.current = null;
     }
-  }, [cancelActiveTurn, conversationId, finishSpeechStream, instanceId, onResponseUpdate, onTranscript, onTurnComplete, onVisualRequest, recordUsage, speakWithBrowser, transition]);
+  }, [cancelActiveTurn, conversationId, makeSpeechQueue, stopAudioOutput, instanceId, onResponseUpdate, onTranscript, onTurnComplete, onVisualRequest, recordUsage, speakWithBrowser, transition]);
 
   const finalizeTranscript = useCallback(() => {
     if (endpointTimerRef.current) clearTimeout(endpointTimerRef.current);
@@ -927,6 +866,7 @@ export default function VoiceAgent({
   }, [finalizeTranscript]);
 
   const interruptForSpeech = useCallback(() => {
+    if (nativeVoiceRef.current) { nativeVoiceRef.current.interrupt(); return; }
     const current = stateRef.current;
     if (current !== "speaking" && current !== "thinking" && current !== "processing") return;
     cancelActiveTurn(true);
@@ -1087,6 +1027,7 @@ export default function VoiceAgent({
   const startUploadFallback = useCallback(async () => {
     const stream = await ensureMicrophone();
     stopRecorder();
+    if (!showVisualizerRef.current || voiceStartupRef.current?.signal.aborted) return;
     uploadChunksRef.current = [];
     let userSpoke = false;
     let silenceSince = 0;
@@ -1111,16 +1052,23 @@ export default function VoiceAgent({
           const form = new FormData();
           form.append("audio", blob, recorder.mimeType.includes("ogg") ? "audio.ogg" : "audio.webm");
           try {
-            const response = await fetch("/api/transcribe", { method: "POST", body: form });
-            if (!response.ok) throw new Error(`Transcription returned ${response.status}`);
-            const data = await response.json() as { text?: string };
+            const { data: { session: transcriptionSession } } = await supabase.auth.getSession();
+            const response = await fetch("/api/transcribe", { method: "POST", body: form,
+              headers: transcriptionSession?.access_token ? { 'x-void-user-token': transcriptionSession.access_token } : {}, signal: voiceStartupRef.current?.signal });
+            const data = await response.json() as { text?: string; language?: string; error?: string };
+            if (!response.ok) throw new Error(data.error || `Transcription returned ${response.status}`);
+            if (!showVisualizerRef.current || voiceStartupRef.current?.signal.aborted) return;
+            if (normalizeSpeechLanguage(data.language)
+              && (!conversationLanguageRef.current || (data.text || '').trim().split(/\s+/).length > 2)) {
+              conversationLanguageRef.current = normalizeSpeechLanguage(data.language)!;
+            }
             if (data.text?.trim()) void submitVoiceTurn(data.text);
             else resumeListeningRef.current();
           } catch (error) {
-            console.error("Fallback transcription failed:", error);
-            setErrorMessage("I couldn't hear that");
+            if (!showVisualizerRef.current || voiceStartupRef.current?.signal.aborted) return;
+            micStreamRef.current?.getTracks().forEach(track => track.stop());
+            setErrorMessage(error instanceof Error ? error.message : 'Transcription failed. Check Voice Agent settings.');
             transition("error");
-            setTimeout(() => resumeListeningRef.current(), 1200);
           }
         }
       );
@@ -1168,13 +1116,12 @@ export default function VoiceAgent({
     }).webkitSpeechRecognition;
 
     if (!SpeechRecognitionClass) {
-      await startUploadFallback();
-      return;
+      throw new Error('Browser speech recognition is unavailable here. Select Deepgram or Whisper in Voice Agent settings.');
     }
     const recognition = new SpeechRecognitionClass();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = document.documentElement.lang || navigator.language || "en-IN";
+    recognition.lang = conversationLanguageRef.current || navigator.language || 'en-IN';
     recognitionRef.current = recognition;
     transportModeRef.current = "browser";
     recognition.onspeechstart = () => {
@@ -1263,14 +1210,17 @@ export default function VoiceAgent({
 
   const startDeepgram = useCallback(async () => {
     const stream = await ensureMicrophone();
-    const tokenResponse = await fetch("/api/transcribe", { cache: "no-store" });
-    if (!tokenResponse.ok) throw new Error(`Live transcription returned ${tokenResponse.status}`);
-    const tokenData = await tokenResponse.json() as { token?: string; socketUrl?: string };
-    if (!tokenData.token && !tokenData.socketUrl) throw new Error("Live transcription connection missing");
+    const { data: { session: transcriptionSession } } = await supabase.auth.getSession();
+    const tokenResponse = await fetch("/api/transcribe", { cache: "no-store",
+      headers: transcriptionSession?.access_token ? { 'x-void-user-token': transcriptionSession.access_token } : {} });
+    const tokenData = await tokenResponse.json() as { token?: string; error?: string };
+    if (!tokenResponse.ok) throw new Error(tokenData.error || `Live transcription returned ${tokenResponse.status}`);
+    if (!tokenData.token) throw new Error("Live transcription connection missing");
+    if (!showVisualizerRef.current || voiceStartupRef.current?.signal.aborted) return;
 
     const params = new URLSearchParams({
       model: "nova-3",
-      language: "multi",
+      language: deepgramSpeechLanguage('auto', conversationLanguageRef.current),
       punctuate: "true",
       smart_format: "true",
       interim_results: "true",
@@ -1279,10 +1229,9 @@ export default function VoiceAgent({
       utterance_end_ms: "1000",
     });
     VOICE_KEYTERMS.forEach((keyterm) => params.append("keyterm", keyterm));
-    const socketBase = tokenData.socketUrl || "wss://api.deepgram.com/v1/listen";
-    const socket = tokenData.token
-      ? new WebSocket(`${socketBase}?${params}`, ["bearer", tokenData.token])
-      : new WebSocket(`${socketBase}?${params}`);
+    const liveUrl = new URL("wss://api.deepgram.com/v1/listen");
+    params.forEach((value, key) => liveUrl.searchParams.append(key, value));
+    const socket = new WebSocket(liveUrl, ["bearer", tokenData.token]);
     socket.binaryType = "arraybuffer";
     socketRef.current = socket;
     transportModeRef.current = "deepgram";
@@ -1335,24 +1284,25 @@ export default function VoiceAgent({
           transition("reconnecting");
           reconnectTimerRef.current = setTimeout(() => void startTransportRef.current(), 350 * 2 ** (reconnectAttemptsRef.current - 1));
         } else {
-          void startBrowserFallback();
+          micStreamRef.current?.getTracks().forEach(track => track.stop());
+          setErrorMessage('Deepgram disconnected. Restart voice or choose another transcription provider.'); transition('error');
         }
       };
     });
-  }, [ensureMicrophone, handleDeepgramMessage, startBrowserFallback, stopRecorder, transition]);
+  }, [ensureMicrophone, handleDeepgramMessage, stopRecorder, transition]);
 
   const startTransport = useCallback(async () => {
-    if (!showVisualizerRef.current || mutedRef.current) return;
+    if (!showVisualizerRef.current || mutedRef.current || voiceConfigRef.current.mode === 'native') return;
     if (socketRef.current?.readyState === WebSocket.OPEN || recognitionRef.current || recorderRef.current?.state === "recording") {
       transition("listening");
       return;
     }
     intentionalTransportStopRef.current = false;
     try {
-      if (deepgramUnavailableRef.current) await startBrowserFallback();
-      else await startDeepgram();
+      if (voiceConfigRef.current.sttProvider === 'browser') await startBrowserFallback();
+      else if (voiceConfigRef.current.sttProvider === 'deepgram') await startDeepgram();
+      else await startUploadFallback();
     } catch (error) {
-      console.warn("Using local transcription fallback:", error);
       stopRecorder();
       deepgramUnavailableRef.current = true;
       const failedSocket = socketRef.current;
@@ -1361,16 +1311,18 @@ export default function VoiceAgent({
         failedSocket.onclose = null;
         try { failedSocket.close(); } catch {}
       }
-      await startBrowserFallback();
-      transition("listening");
+      micStreamRef.current?.getTracks().forEach(track => track.stop());
+      setErrorMessage(error instanceof Error ? error.message : 'Your selected transcription provider is unavailable.');
+      transition('error');
     }
-  }, [startBrowserFallback, startDeepgram, stopRecorder, transition]);
+  }, [startBrowserFallback, startDeepgram, startUploadFallback, stopRecorder, transition]);
 
   useEffect(() => {
     startTransportRef.current = startTransport;
   }, [startTransport]);
 
   const resumeListening = useCallback(() => {
+    if (nativeVoiceRef.current) { transition(mutedRef.current ? 'idle' : 'listening'); return; }
     if (!showVisualizerRef.current || mutedRef.current) {
       transition("idle");
       return;
@@ -1393,6 +1345,8 @@ export default function VoiceAgent({
   }, [resumeListening]);
 
   const startSession = useCallback(async () => {
+    cancelActiveTurn(true); stopTransport(true);
+    nativeVoiceRef.current?.stop(); nativeVoiceRef.current = null;
     globalActiveInstanceId = instanceId;
     setShowVisualizer(true);
     showVisualizerRef.current = true;
@@ -1406,26 +1360,47 @@ export default function VoiceAgent({
     }
     mutedRef.current = false;
     setMuted(false);
+    voiceStartupRef.current?.abort();
+    const startup = new AbortController(); voiceStartupRef.current = startup;
     try {
-      // Prime native voices while this user gesture is active. SpeechSynthesis
-      // is the primary, account-free voice path and has no hosted TTS quota.
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch('/api/voice/session', { method: 'POST', headers: { 'x-void-user-token': session?.access_token || '' }, signal: startup.signal });
+      const settings = await response.json();
+      if (!response.ok) throw new Error(settings.error || 'Could not start your BYOK voice session.');
+      if (startup.signal.aborted || !showVisualizerRef.current) return false;
+      voiceConfigRef.current = settings.config;
+      // Initialize browser speech only for the explicitly selected browser voice.
       window.speechSynthesis?.resume();
       window.speechSynthesis?.getVoices();
       const audioContext = await ensureAudioContext();
       playVoiceTransitionSound(audioContext, "enter");
-      await ensureMicrophone();
+      const microphone = await ensureMicrophone();
+      if (startup.signal.aborted || !showVisualizerRef.current) { microphone.getTracks().forEach(track => track.stop()); return false; }
+      if (settings.config.mode === 'native') {
+        nativeVoiceRef.current = await startNativeVoice(settings as NativeSession, microphone, audioContext, startup.signal, {
+          state: next => { if (next === 'speaking' && stateRef.current !== 'speaking') onAudioStart?.(''); if (next === 'listening' && stateRef.current === 'speaking') onAudioEnd?.(); transition(next); },
+          user: text => { setPartialTranscript(''); onTranscript?.(text); },
+          assistant: (text, complete) => onResponseUpdate?.(text, complete, { modelName: settings.config.nativeModel }),
+          turn: (userText, assistantText) => { if (!onResponseUpdate) onTurnComplete?.(userText, assistantText); recordUsage(); },
+          error: message => { micStreamRef.current?.getTracks().forEach(track => track.stop()); setErrorMessage(message); transition('error'); },
+        });
+        return true;
+      }
       transition(interactionMode === "auto" ? "reconnecting" : "idle");
       if (interactionMode === "auto") await startTransportRef.current();
-      return true;
+      return stateRef.current !== 'error';
     } catch (error) {
-      console.error("Microphone startup failed:", error);
-      setErrorMessage("Microphone permission needed");
+      if (startup.signal.aborted) return false;
+      micStreamRef.current?.getTracks().forEach(track => track.stop());
+      setErrorMessage(error instanceof Error ? error.message : 'Could not start voice. Check microphone access and Voice Agent settings.');
       transition("error");
       return false;
     }
-  }, [ensureAudioContext, ensureMicrophone, instanceId, interactionMode, transition]);
+  }, [cancelActiveTurn, stopTransport, ensureAudioContext, ensureMicrophone, instanceId, interactionMode, transition, onTranscript, onResponseUpdate, onTurnComplete, onAudioStart, onAudioEnd, recordUsage]);
 
   const closeVisualizer = useCallback(() => {
+    voiceStartupRef.current?.abort(); voiceStartupRef.current = null;
+    nativeVoiceRef.current?.stop(); nativeVoiceRef.current = null;
     const wasOpen = showVisualizerRef.current;
     cancelActiveTurn(true);
     stopTransport(true);
@@ -1462,6 +1437,11 @@ export default function VoiceAgent({
   }, [active, startSession, closeVisualizer]);
 
   const toggleMute = useCallback(() => {
+    if (nativeVoiceRef.current) {
+      if (stateRef.current === 'speaking' || stateRef.current === 'thinking') { nativeVoiceRef.current.interrupt(); return; }
+      const next = !mutedRef.current; mutedRef.current = next; setMuted(next);
+      micStreamRef.current?.getAudioTracks().forEach(track => { track.enabled = !next; }); transition(next ? 'idle' : 'listening'); return;
+    }
     if (stateRef.current === "speaking" || stateRef.current === "thinking" || stateRef.current === "processing") {
       interruptForSpeech();
       return;
@@ -1525,6 +1505,7 @@ export default function VoiceAgent({
   useEffect(() => {
     if (!showVisualizer) return;
     bargeInTimerRef.current = setInterval(() => {
+      if (voiceConfigRef.current.mode === 'native') return; // Realtime providers handle acoustic VAD and interruptions.
       const inputLevel = getInputVolume();
       const current = stateRef.current;
       if (["idle", "listening", "reconnecting"].includes(current) && inputLevel < 0.22) {
@@ -1623,13 +1604,14 @@ export default function VoiceAgent({
 
   return (
     <>
+      {showVisualizer && errorMessage && <p role="status" className="fixed right-4 top-4 z-[70] max-w-[min(300px,calc(100vw-2rem))] rounded-xl border border-gray-200 bg-white px-4 py-3 text-xs leading-relaxed text-gray-600 shadow-lg dark:border-white/10 dark:bg-[#202020] dark:text-gray-300">{errorMessage}</p>}
       <div className="relative flex items-center">
         <motion.button
           type="button"
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.96 }}
           transition={{ type: "spring", stiffness: 320, damping: 28, mass: 0.6 }}
-          onClick={showVisualizer ? toggleMute : openVoiceMode}
+          onClick={state === 'error' ? openVoiceMode : showVisualizer ? toggleMute : openVoiceMode}
           className={`relative flex h-11 w-11 items-center justify-center rounded-full border shadow-none transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/30 ${
             showVisualizer
               ? muted
@@ -1637,8 +1619,8 @@ export default function VoiceAgent({
                 : "border-black/10 bg-black/[0.055] text-gray-800 hover:bg-black/[0.08] dark:border-white/10 dark:bg-white/[0.075] dark:text-gray-100 dark:hover:bg-white/[0.11]"
               : "border-black/10 bg-black/[0.035] text-gray-700 hover:bg-black/[0.07] dark:border-white/10 dark:bg-white/[0.055] dark:text-gray-200 dark:hover:bg-white/[0.09]"
           }`}
-          title={!showVisualizer ? "Start Void voice" : primaryLabel}
-          aria-label={!showVisualizer ? "Start Void voice" : primaryLabel}
+          title={state === 'error' ? 'Retry voice connection' : !showVisualizer ? "Start Void voice" : primaryLabel}
+          aria-label={state === 'error' ? 'Retry voice connection' : !showVisualizer ? "Start Void voice" : primaryLabel}
         >
           {showVisualizer && muted ? (
             <MicOff className="h-5 w-5" />

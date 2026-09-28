@@ -13,15 +13,26 @@ import './tools/maps-search.js';
 import './tools/generate-image.js';
 
 // Phase 4: Code & computation
-import './tools/calculator.js';
-import './tools/code-execution.js';
-import './tools/file-tools.js';
+import { registerCalculatorTools } from './tools/calculator.js';
+import { registerCodeExecutionTools } from './tools/code-execution.js';
+import { registerFileTools } from './tools/file-tools.js';
 
 // Phase 5: Memory & external data
-import './tools/memory.js';
-import './tools/external-data.js';
-import './tools/conversation-search.js';
-import './tools/diagram-renderer.js';
+import { registerMemoryTools } from './tools/memory.js';
+import { registerExternalDataTools } from './tools/external-data.js';
+import { registerConversationSearchTools } from './tools/conversation-search.js';
+import { registerDiagramTools } from './tools/diagram-renderer.js';
+import { registerWorkspaceTools } from './tools/browser-workspace.js';
+
+// These modules export initializers rather than registering as an import side effect.
+registerCalculatorTools();
+registerCodeExecutionTools();
+registerFileTools();
+registerMemoryTools();
+registerExternalDataTools();
+registerConversationSearchTools();
+registerDiagramTools();
+registerWorkspaceTools();
 
 // Phase 6: Orchestration (tool_search)
 import { registerOrchestrationTools } from './orchestration.js';

@@ -24,14 +24,21 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run check:repository
       - run: npm test
+      - run: npm run test:database
+      - run: npm run test:frontend
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run build
+      - run: npm run test:production
       - name: Build deployment image
         run: docker build -t void:ci .
       - name: Smoke test deployment image
         shell: bash
         run: |
           export ENCRYPTION_KEY=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
-          docker run -d --name void-smoke -e ENCRYPTION_KEY void:ci
+          export VOID_ACCESS_USER=operator
+          export VOID_ACCESS_PASSWORD=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
+          export VOID_INTERNAL_KEY=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
+          docker run -d --name void-smoke -e ENCRYPTION_KEY -e VOID_ACCESS_USER -e VOID_ACCESS_PASSWORD -e VOID_INTERNAL_KEY void:ci
           trap 'docker rm -f void-smoke >/dev/null' EXIT
           for attempt in $(seq 1 60); do
             health=$(docker inspect --format '{{.State.Health.Status}}' void-smoke)

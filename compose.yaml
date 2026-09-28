@@ -11,14 +11,19 @@ services:
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
+      BACKEND_HOST: 0.0.0.0
       PORT: "3000"
       BACKEND_PORT: "3001"
       BACKEND_URL: http://127.0.0.1:3001
       FRONTEND_URL: http://127.0.0.1:3000
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set a 64-character hex ENCRYPTION_KEY in .env}
+      VOID_ACCESS_USER: ${VOID_ACCESS_USER:?Set the private deployment username}
+      VOID_ACCESS_PASSWORD: ${VOID_ACCESS_PASSWORD:?Set a random password of at least 24 characters}
+      VOID_INTERNAL_KEY: ${VOID_INTERNAL_KEY:?Set a random internal service key of at least 32 characters}
     ports:
       - "127.0.0.1:3000:3000"
-      - "127.0.0.1:3001:3001"
+    expose:
+      - "3001"
     volumes:
       - backend-data:/app/backend/server/data
       - generated-images:/app/data

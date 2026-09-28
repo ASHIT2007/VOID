@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@freellmapi/shared/types.js';
+import type { ChatMessage } from '@void/shared/types.js';
 import crypto from 'crypto';
 import { estimateContentTokens } from '../lib/content.js';
 

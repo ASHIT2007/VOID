@@ -11,6 +11,7 @@ export function detectCodeLanguage(code: string, language = ""): string {
   // Repair obviously mislabelled Markdown, while leaving real program source intact.
   if ((!explicit || ["code", "javascript", "text", "markdown"].includes(explicit)) && !codeStatements && (headings >= 2 || (headings >= 1 && markdownItems >= 2))) return "markdown";
   if (explicit && explicit !== "code") return explicit;
+  if (/^(?:mindmap|flowchart\s+(?:TD|TB|BT|RL|LR)|graph\s+(?:TD|TB|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram|erDiagram)\b/i.test(value)) return 'mermaid';
   if (/^[\[{]/.test(value)) {
     try { JSON.parse(value); return "json"; } catch { /* Continue conservative detection. */ }
   }

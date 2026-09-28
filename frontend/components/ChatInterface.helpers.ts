@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import type { PresentationData, Slide } from "../types/presentation";
 import { VISUAL_GENERATION_DIRECTIVE } from '../lib/design/generation-prompt';
+import { extractToolProtocol, requestsToolExample } from '@void/shared/tool-protocol.mjs';
+import type { ProgressLog } from '../lib/chat-progress';
+import { presentationDelivery, requestedFileTools } from '@void/shared/file-intent.mjs';
 
 export type ThinkingEffort = "low" | "medium" | "high";
 
@@ -79,7 +82,7 @@ export const isInfographicCreationRequest = (message: string): boolean => (
   || /\b(?:analy[sz]e|explain|summari[sz]e)\b[^.!?]{0,80}\bvisually\b/i.test(message)
 );
 export const isPosterCreationRequest = (message: string): boolean => isCreationRequest(message, posterNoun) || isInfographicCreationRequest(message);
-export const isPresentationCreationRequest = (message: string): boolean => isCreationRequest(message, presentationNoun);
+export const isPresentationCreationRequest = (message: string): boolean => presentationDelivery(message) !== null;
 /**
  * ChatGPT-style poster requests are finished images. Keep information-dense or
  * explicitly editable poster formats in the visual studio where their text and
@@ -91,8 +94,9 @@ export const isRasterPosterCreationRequest = (message: string): boolean => (
   && !structuredPosterIntent.test(message)
 );
 export const isStudioCreationRequest = (message: string): boolean => (
-  isPresentationCreationRequest(message)
+  !requestedFileTools(message).length && (isPresentationCreationRequest(message)
   || (isPosterCreationRequest(message) && !isRasterPosterCreationRequest(message))
+  )
 );
 
 /** Never mount a title-only poster/infographic returned by a weak model. */
@@ -118,12 +122,13 @@ export function hasRenderablePosterContent(data: PresentationData): boolean {
 }
 
 export function isNaturalImageGeneration(message: string): boolean {
+  if (requestedFileTools(message).length || /\b(?:diagrams?|mind[ -]?maps?|flowcharts?|mermaid|charts?|graphs?)\b/i.test(message)) return false;
   if (isRasterPosterCreationRequest(message)) return true;
   if (isStudioCreationRequest(message)) return false;
   const visual = /\b(?:images?|pictures?|photos?|illustrations?|artworks?|wallpapers?|logos?|icons?|portraits?|scenes?)\b/i.test(message);
   const text = /\b(?:response|reply|answer|text|code|list|plan|essay|story|poem|email|message|table|chart|analysis|report|presentation|website|app|explain|explanation|elaborate|describe|description|discuss|details?|write[- ]?up|caption)\b/i.test(message);
   const direct = /^\s*(?:(?:please|can you|could you|would you)\s+)?(?:generate|genrate|genarate|generat|create|draw|render|paint|illustrate)\b/i.test(message);
-  return (direct && !text)
+  return (direct && visual && !text) || (/^\s*(?:(?:please|can you|could you)\s+)?(?:draw|paint|illustrate)\b/i.test(message) && !text)
     || (visual && /\b(?:generate|genrate|genarate|generat|create|make|design|draw|render|paint|illustrate)\b/i.test(message));
 }
 
@@ -297,7 +302,12 @@ export function assignPresentationMedia(data: PresentationData, images: ChatMedi
   const candidates = mergeChatMediaImages([], images).filter((image) => image.verified === true || image.generated === true);
   const used = new Set(data.slides.map((slide) => slide.imageUrl).filter(isUsableChatImageUrl));
   const slides = data.slides.map((slide, index): Slide => {
-    const existing = isUsableChatImageUrl(slide.imageUrl) ? slide.imageUrl : undefined;
+    const wantsDocument = /\b(?:screenshot|webpage|website|document|newspaper|book cover|interface)\b/i.test(`${slide.title} ${slide.imagePrompt || ''}`);
+    const suitable = candidates.filter(image => wantsDocument || !/\b(?:screenshot|webpage|web page|website capture)\b/i.test(`${image.title || ''} ${image.alt || ''} ${image.url}`));
+    // A URL invented by the model is not retrieved evidence. Keep completed local
+    // assets, or URLs backed by this turn's verified image metadata.
+    const existing = isUsableChatImageUrl(slide.imageUrl)
+      && (slide.imageUrl?.startsWith('/api/generated-image/') || suitable.some(image => image.url === slide.imageUrl)) ? slide.imageUrl : undefined;
     const content = slide.content || {};
     const structured = Boolean(content.chart?.data?.length || content.timeline?.length || content.comparison || content.process?.length || content.quote?.text
       || ["timeline", "comparison", "process", "cycle", "diagram", "big-stat", "quote", "closing", "section-header", "references"].includes(slide.layout));
@@ -305,7 +315,7 @@ export function assignPresentationMedia(data: PresentationData, images: ChatMedi
     const titleWords = words(`${slide.title} ${slide.subtitle || ""}`);
     const slideWords = words(`${slide.title} ${slide.subtitle || ""} ${slide.imagePrompt || ""} ${content.bodyText || ""} ${(content.bullets || []).join(" ")}`);
     const slideYears = new Set(`${slide.title} ${slide.subtitle || ""} ${content.bodyText || ""}`.match(/\b(?:18|19|20)\d{2}\b/g) || []);
-    const ranked = candidates.filter((image) => !used.has(image.url)
+    const ranked = suitable.filter((image) => !used.has(image.url)
       && (!image.slideId || image.slideId === slide.id)
       && (!image.slideNumber || image.slideNumber === slide.slideNumber))
       .map((image) => {
@@ -328,12 +338,12 @@ export function assignPresentationMedia(data: PresentationData, images: ChatMedi
       || (top.slideOverlap >= 1 && top.deckOverlap >= 1)
       || (index === 0 && top.deckOverlap >= 2))
     ));
-    const match = existing ? candidates.find((image) => image.url === existing)
+    const match = existing ? suitable.find((image) => image.url === existing)
       : canAcceptImage && topIsRelevant ? top.image : undefined;
     const imageUrl = existing || match?.url;
-    if (!imageUrl) return slide;
+    if (!imageUrl) return { ...slide, imageUrl: undefined };
     used.add(imageUrl);
-    const source = match?.sourceUrl || (match?.sourceDomain ? `https://${match.sourceDomain.replace(/^https?:\/\//, "")}` : undefined);
+    const source = match?.sourceUrl;
     return {
       ...slide,
       imageUrl,
@@ -373,21 +383,22 @@ export function asPoster(data: PresentationData, request: string): PresentationD
   };
 }
 
-export type ChatProgressLog = { action?: string; query?: string };
+export type ChatProgressLog = Partial<ProgressLog>;
 const internalProgress = /\b(?:agents?|workers?|specialists?|synthesizer|orchestrat\w*|auto|routing|model|provider|tokens?|confidence|effort|fallback)\b/i;
 
 export function visibleProgressLogs(logs: ChatProgressLog[] = []): ChatProgressLog[] {
   const result: ChatProgressLog[] = [];
   for (const log of logs) {
     if (!log || !log.action) continue;
-    const internal = internalProgress.test(`${log.action} ${log.query || ""}`);
+    const internal = log.kind !== 'task' && internalProgress.test(log.action);
     const action = internal ? /synthes|writ|finaliz/i.test(log.action) ? "Writing the response"
       : /research|search/i.test(log.action) ? "Researching sources"
       : /verif|fact.?check/i.test(log.action) ? "Checking the details"
       : /repair/i.test(log.action) ? "Refining the artifact"
       : "Reviewing the request" : log.action;
-    const item = { action, query: internal ? "" : log.query || "" };
-    if (!result.some((entry) => entry.action === item.action && entry.query === item.query)) result.push(item);
+    const item = { ...log, action, query: internal ? "" : log.query || "" };
+    const previous = result[result.length - 1];
+    if (!previous || previous.action !== item.action || previous.query !== item.query || previous.state !== item.state) result.push(item);
   }
   return result;
 }
@@ -466,7 +477,7 @@ export function extractMarkdownReasoning(content: string): {
   };
 }
 
-export function extractThinkAndDisplayContent(rawContent: string): {
+export function extractThinkAndDisplayContent(rawContent: string, userPrompt = ''): {
   thinkContent: string | null;
   displayContent: string;
 } {
@@ -476,7 +487,7 @@ export function extractThinkAndDisplayContent(rawContent: string): {
 
   // Helper to remove any <call_search>...</call_search> block from display output and clean citation tags
   const stripSystemTags = (content: string) => {
-    let stripped = content.replace(/<call_search>[\s\S]*?<\/call_search>/gi, "");
+    let stripped = extractToolProtocol(content, { streaming: true, preserveExamples: requestsToolExample(userPrompt) }).text.replace(/<call_search>[\s\S]*?<\/call_search>/gi, "");
     stripped = stripped.replace(/<call_search>[^<]*$/i, "");
     stripped = stripped.replace(/【(\d+)(?:[†:][^】]*)?】/g, "[$1]");
     stripped = stripped.replace(/【[^】]*】/g, "");

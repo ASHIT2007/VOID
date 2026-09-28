@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   AlignCenter,
   AlignLeft,
@@ -34,7 +34,7 @@ import type { DesignPalette, DesignStyle, PresentationData, Slide, SlideElementK
 import { EditableElement, elementId, type CanvasEditor } from "@/components/visual-editor/EditableElement";
 import { NativeDesignFigure } from "@/components/visual-editor/NativeDesignFigure";
 import { headingSize, pagePalette, readableInk, styleTypography } from "@/lib/design/visual-theme";
-import { attachGeneratedImage, plannedImageRequests, requestDesignImage } from "@/lib/design/design-image-client";
+import { attachGeneratedImage, attachImageFailure, plannedImageRequests, requestDesignImage } from "@/lib/design/design-image-client";
 import { prepareHtml2CanvasClone } from "@/lib/html2canvas-safe";
 import {
   DESIGN_STYLES,
@@ -180,10 +180,21 @@ function elementValue(data: PresentationData, id: string): string {
   return "";
 }
 
+const ImageFailureContext = createContext<(src: string) => void>(() => {});
+const ImageGenerationFailureContext = createContext<string | null>(null);
+
 function SlideImage({ src, alt, objectPosition }: { src: string; alt: string; objectPosition?: string }) {
+  const reportFailure = useContext(ImageFailureContext);
+  const generationFailure = useContext(ImageGenerationFailureContext);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const failed = failedSrc === src;
   const preserveWholeImage = /\b(?:map|diagram|chart|graph|document|newspaper|book cover|poster|infographic|screenshot|page|flag|table)\b/i.test(alt);
+
+  if (src === 'void:image-unavailable') return <div role="status" className="flex h-full w-full items-end justify-end bg-neutral-950 p-[8%] text-neutral-200">
+    <div className="max-w-[75%] text-[clamp(7px,1.1cqw,16px)] leading-snug"><strong className="mb-[0.5em] block">Image unavailable</strong>
+      <span>{generationFailure || 'This image could not be generated because the image model encountered a problem.'}</span>
+    </div>
+  </div>;
 
   if (failed) {
     return (
@@ -198,7 +209,7 @@ function SlideImage({ src, alt, objectPosition }: { src: string; alt: string; ob
     src={src}
     alt={alt}
     crossOrigin="anonymous"
-    onError={() => setFailedSrc(src)}
+    onError={() => { setFailedSrc(src); reportFailure(src); }}
     className={`block h-full w-full ${preserveWholeImage ? "object-contain" : "object-cover"}`}
     style={{ objectPosition: objectPosition || "center" }}
   />;
@@ -267,7 +278,7 @@ function BulletList({ slide, palette, limit = 5, editor }: { slide: Slide; palet
         <div key={`${bullet}-${index}`} className="grid grid-cols-[auto_1fr] gap-4">
           <span className={sparse ? "mt-[0.45em] h-[0.75cqw] w-[0.75cqw]" : "mt-[0.45em] h-2 w-2"} style={{ backgroundColor: palette.primary }} />
           <EditableElement id={elementId(slide.id, "bullet", index)} kind="bullet" state={slide.elementStyles?.[elementId(slide.id, "bullet", index)]} editor={editor} value={bullet}>
-            <p className="overflow-hidden leading-[1.35] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]" style={{ color: palette.text, fontSize: sparse ? "1.65cqw" : words > 85 || bullets.length > limit ? "1.2cqw" : "1.48cqw" }}>{plain(bullet)}</p>
+            <p className="leading-[1.35]" style={{ color: palette.text, fontSize: sparse ? "1.65cqw" : words > 85 || bullets.length > limit ? "1.2cqw" : "1.48cqw" }}>{plain(bullet)}</p>
           </EditableElement>
         </div>
       ))}
@@ -276,10 +287,21 @@ function BulletList({ slide, palette, limit = 5, editor }: { slide: Slide; palet
 }
 
 export function VisualPage({ data, slide, editor }: { data: PresentationData; slide: Slide; compact?: boolean; editor?: CanvasEditor }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const url = imageUrlFor(data, slide);
+  const effectiveSlide = failedUrl && failedUrl === url
+    ? { ...slide, imageUrl: undefined, imagePrompt: undefined, visualRole: "typography" as const }
+    : slide;
+  return <ImageFailureContext.Provider value={setFailedUrl}><ImageGenerationFailureContext.Provider value={slide.imageGeneration?.status === 'failed' ? slide.imageGeneration.message || 'This image could not be generated because the image model encountered a problem.' : null}><div className="relative w-full">
+    <VisualPageContent data={data} slide={effectiveSlide} editor={editor} />
+  </div></ImageGenerationFailureContext.Provider></ImageFailureContext.Provider>;
+}
+
+function VisualPageContent({ data, slide, editor }: { data: PresentationData; slide: Slide; editor?: CanvasEditor }) {
   const plan = data.designPlan!;
   const palette = pagePalette(plan, slide);
   const fonts = styleTypography(plan.style);
-  const imageUrl = imageUrlFor(data, slide);
+  const imageUrl = imageUrlFor(data, slide) || (!data.hideImages && slide.imageGeneration?.status === 'failed' ? 'void:image-unavailable' : undefined);
   const total = data.slides.length;
   const isPoster = data.format !== "presentation";
   const formatLabel = typeof data.format === "string" ? data.format.replace(/-/g, " ") : "presentation";
@@ -299,7 +321,44 @@ export function VisualPage({ data, slide, editor }: { data: PresentationData; sl
     // Explicit dimensions make percentage-height image panels work in stage/export.
     width: "100%",
     lineHeight: 1.35,
+    minHeight: 0,
+    gridAutoRows: "minmax(0, 1fr)",
   };
+
+  if (layout === "references") {
+    const sources = slide.content.sources || [];
+    return <div className="visual-page relative w-full overflow-hidden p-[6%]" style={pageStyle} data-slide-id={slide.id}>
+      <span className="text-[1cqw] font-bold uppercase tracking-[0.18em]" style={{ color: palette.primary }}>Reading & references</span>
+      <h1 className="mt-[2%] leading-tight" style={titleStyle}>{slide.title}</h1>
+      {sources.length ? <ol className="mt-[4%] grid grid-cols-2 gap-x-[5%] gap-y-[2cqw]">
+        {sources.map((source, index) => <li key={source} className="min-w-0 border-t pt-[1cqw]" style={{ borderColor: rgba(palette.text, 0.18) }}>
+          <a href={source} target="_blank" rel="noopener noreferrer" className="block break-words text-[1.3cqw] leading-snug" style={{ color: palette.text }}>
+            <span className="mr-[1cqw] opacity-50">{index + 1}.</span>{source}
+          </a>
+        </li>)}
+      </ol> : <p className="mt-[5%] max-w-[80%] text-[1.8cqw]" style={{ color: palette.muted }}>{slide.content.bodyText}</p>}
+      <PageNumber slide={slide} total={total} palette={palette} />
+    </div>;
+  }
+
+  if (["stats-grid", "metrics-3", "fast-facts", "matrix", "quadrant", "cycle", "hierarchy", "diagram", "code"].includes(layout)) {
+    const metrics = [...(slide.content.metrics || []), ...(slide.content.factCards || [])];
+    return <div className="visual-page relative w-full overflow-hidden p-[6%]" style={pageStyle} data-slide-id={slide.id}>
+      <span className="text-[1cqw] font-bold uppercase tracking-[0.18em]" style={{ color: palette.primary }}>{eyebrow}</span>
+      <h1 className="mt-[2%] leading-tight" style={titleStyle}>{slide.title}</h1>
+      {slide.content.bodyText && <p className="mt-[2%] text-[1.5cqw]" style={{ color: palette.muted }}>{slide.content.bodyText}</p>}
+      <div className="mt-[3%] h-[60%] min-h-0">
+        {slide.content.codeSnippet ? <pre className="h-full overflow-hidden whitespace-pre-wrap text-[1.5cqw]">{slide.content.codeSnippet.code}</pre>
+          : metrics.length ? <div className="grid h-full items-center gap-[4%]" style={{ gridTemplateColumns: `repeat(${Math.min(metrics.length, 4)}, minmax(0, 1fr))` }}>
+            {metrics.map((metric, index) => <div key={index} className="border-t-2 pt-[2cqw]" style={{ borderColor: palette.primary }}>
+              <strong className="block break-words text-[4.2cqw] leading-tight">{metric.value}</strong>
+              <p className="mt-[1.5cqw] text-[1.7cqw]">{metric.label}</p>
+            </div>)}
+          </div> : <NativeDesignFigure slide={slide} palette={palette} editor={editor} />}
+      </div>
+      <PageNumber slide={slide} total={total} palette={palette} />
+    </div>;
+  }
 
   if (layout === "raster-poster" && imageUrl) {
     return (
@@ -505,8 +564,11 @@ export default function VisualDesignStudio({ data: rawData, onClose, onChange, i
   const [editStatus, setEditStatus] = useState<"idle" | "working" | "error">("idle");
   const [historyState, setHistoryState] = useState({ undo: 0, redo: 0 });
   const [exporting, setExporting] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportRef = useRef<HTMLDivElement>(null);
   const [visualPending, setVisualPending] = useState(false);
   const [visualError, setVisualError] = useState<string | null>(null);
+  const [visualNotice, setVisualNotice] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [compactStudio, setCompactStudio] = useState(true);
   const studioRef = useRef<HTMLDivElement>(null);
@@ -570,9 +632,14 @@ export default function VisualDesignStudio({ data: rawData, onClose, onChange, i
     void Promise.allSettled(requestedVisuals.map(async ({ slideId, request, key }) => {
       try {
         const result = await requestDesignImage(request);
+        if (active && result.notice) setVisualNotice(result.notice);
         if (active) commitData((current) => attachGeneratedImage(current, slideId, key, result));
       } catch (error) {
-        if (active) setVisualError(error instanceof Error ? error.message : 'The illustration could not be generated.');
+        if (active) {
+          const message = error instanceof Error ? error.message : 'The image could not be generated because the image model encountered a problem.';
+          setVisualError(message);
+          commitData(current => attachImageFailure(current, slideId, key, message));
+        }
       }
     })).then(() => { if (active) setVisualPending(false); });
     return () => { active = false; };
@@ -664,51 +731,70 @@ export default function VisualDesignStudio({ data: rawData, onClose, onChange, i
   };
 
   const exportPages = async () => {
-    const pages = Array.from(document.querySelectorAll<HTMLElement>(".visual-export-page .visual-page"));
-    return Promise.all(pages.map((page) => html2canvas(page, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: false,
-      backgroundColor: data.designPlan!.palette.background,
-      onclone: prepareHtml2CanvasClone,
+    await document.fonts.ready;
+    const root = exportRef.current;
+    if (!root) throw new Error("The export canvas is not ready. Please retry.");
+    await Promise.all(Array.from(root.querySelectorAll("img")).map(image => new Promise<void>(resolve => {
+      if (image.complete) { resolve(); return; }
+      const finish = () => { clearTimeout(timer); image.removeEventListener("load", finish); image.removeEventListener("error", finish); resolve(); };
+      const timer = setTimeout(() => { image.dispatchEvent(new Event("error")); finish(); }, 20_000);
+      image.addEventListener("load", finish, { once: true });
+      image.addEventListener("error", finish, { once: true });
     })));
+    // Allow failed-image layout changes and loaded font metrics to settle.
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const pages = Array.from(root.querySelectorAll<HTMLElement>(".visual-page"));
+    if (pages.length !== data.slides.length) throw new Error("Some pages are not ready. Please retry.");
+    const canvases: HTMLCanvasElement[] = [];
+    // Sequential capture avoids several full-resolution DOM clones in memory.
+    for (const page of pages) {
+      canvases.push(await html2canvas(page, {
+        scale: 1.5, useCORS: true, allowTaint: false,
+        backgroundColor: data.designPlan!.palette.background,
+        onclone: prepareHtml2CanvasClone,
+      }));
+    }
+    return canvases;
   };
 
   const exportPdf = async () => {
-    setExporting("pdf");
+    setExporting("pdf"); setExportError(null);
     try {
       const canvases = await exportPages();
-      const poster = data.format !== "presentation";
-      const pdf = new jsPDF({ orientation: poster ? "portrait" : "landscape", unit: "pt", format: poster ? "a4" : [1280, 720] });
+      const width = canvases[0].width / 1.5, height = canvases[0].height / 1.5;
+      const orientation = width >= height ? "landscape" : "portrait";
+      const pdf = new jsPDF({ orientation, unit: "pt", format: [width, height] });
       canvases.forEach((canvas, index) => {
-        if (index) pdf.addPage(poster ? "a4" : [1280, 720], poster ? "portrait" : "landscape");
-        pdf.addImage(canvas.toDataURL("image/jpeg", 0.94), "JPEG", 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight());
+        if (index) pdf.addPage([width, height], orientation);
+        pdf.addImage(canvas.toDataURL("image/jpeg", 0.94), "JPEG", 0, 0, width, height);
+        canvas.width = 0; canvas.height = 0;
       });
       pdf.save(`${data.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "visual-design"}.pdf`);
-    } finally { setExporting(null); }
+    } catch (error) { setExportError(error instanceof Error ? error.message : "PDF export failed. Please retry."); }
+    finally { setExporting(null); }
   };
 
   const exportPptx = async () => {
-    setExporting("pptx");
+    setExporting("pptx"); setExportError(null);
     try {
       const canvases = await exportPages();
       const pres = new pptxgen();
-      const poster = data.format !== "presentation";
-      if (poster) {
-        pres.defineLayout({ name: "VOID_POSTER", width: 7.5, height: data.format === "academic-poster" ? 10.605 : 9.375 });
-        pres.layout = "VOID_POSTER";
-      } else {
-        pres.layout = "LAYOUT_WIDE";
-      }
-      pres.author = data.author || "VOID Visual Design Engine";
+      const width = 13.333, height = width * canvases[0].height / canvases[0].width;
+      pres.defineLayout({ name: "VOID_CANVAS", width, height });
+      pres.layout = "VOID_CANVAS";
+      pres.author = data.author || "VOID";
       pres.subject = data.designPlan?.subject || data.title;
       pres.title = data.title;
-      canvases.forEach((canvas) => {
+      canvases.forEach((canvas, index) => {
         const page = pres.addSlide();
-        page.addImage({ data: canvas.toDataURL("image/png"), x: 0, y: 0, w: poster ? 7.5 : 13.333, h: poster ? (data.format === "academic-poster" ? 10.605 : 9.375) : 7.5 });
+        const slide = data.slides[index];
+        page.addImage({ data: canvas.toDataURL("image/png"), x: 0, y: 0, w: width, h: height, altText: slide.title });
+        page.addNotes([slide.speakerNotes || "", slide.title, slide.content.bodyText || "", ...(slide.content.bullets || []), ...(slide.content.sources || [])].filter(Boolean).join("\n\n"));
+        canvas.width = 0; canvas.height = 0;
       });
       await pres.writeFile({ fileName: `${data.title.replace(/[^a-z0-9]+/gi, "-") || "visual-design"}.pptx` });
-    } finally { setExporting(null); }
+    } catch (error) { setExportError(error instanceof Error ? error.message : "PowerPoint export failed. Please retry."); }
+    finally { setExporting(null); }
   };
 
   const activeId = selectedIds[selectedIds.length - 1];
@@ -817,12 +903,13 @@ export default function VisualDesignStudio({ data: rawData, onClose, onChange, i
         {!compactStudio && <button onClick={redo} disabled={historyState.redo === 0} className="grid h-8 w-8 place-items-center rounded-md text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white disabled:opacity-20" title="Redo (Ctrl+Shift+Z)"><Redo2 size={16} /></button>}
         <button onClick={() => { setEditing((value) => !value); setSelectedIds([]); setSelectedKind(null); }} aria-pressed={editing} className={`grid h-8 w-8 place-items-center rounded-md transition-colors ${editing ? "bg-white text-black" : "text-white/60 hover:bg-white/[0.07] hover:text-white"}`} title={editing ? "Turn element editing off" : "Edit elements"}><Pencil size={16} /></button>
         {!compactStudio && <button onClick={exportPdf} disabled={Boolean(exporting)} className="grid h-8 w-8 place-items-center rounded-md text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white disabled:opacity-30" title="Export PDF"><FileDown size={16} /></button>}
-        <button onClick={exportPptx} disabled={Boolean(exporting)} className="grid h-8 w-8 place-items-center rounded-md text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white disabled:opacity-30" title="Export PowerPoint"><Download size={16} /></button>
+        <button onClick={exportPptx} disabled={Boolean(exporting)} className="grid h-8 w-8 place-items-center rounded-md text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white disabled:opacity-30" title="Export PowerPoint · rendered slides with speaker notes"><Download size={16} /></button>
         {onClose && <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-md text-white/55 transition-colors hover:bg-white/[0.07] hover:text-white" title="Close preview"><X size={17} /></button>}
       </header>
 
-      {(visualPending || visualError) && <div role="status" className="shrink-0 border-b border-white/10 px-4 py-2 text-xs leading-relaxed text-white/65">
-        {visualError || 'Creating the illustration with OpenAI…'}
+      {exportError && <div role="alert" className="border-b border-white/10 px-4 py-2 text-xs text-white/75">{exportError}</div>}
+      {(visualPending || visualError || visualNotice) && <div role="status" className="shrink-0 border-b border-white/10 px-4 py-2 text-xs leading-relaxed text-white/65">
+        {visualError || visualNotice || 'Creating the illustration…'}
       </div>}
 
       {editing && activeId && toolbarRect && (
@@ -1016,7 +1103,7 @@ export default function VisualDesignStudio({ data: rawData, onClose, onChange, i
         )}
       </div>
 
-      <div className="visual-export-page pointer-events-none fixed -left-[99999px] top-0 w-[1280px]" aria-hidden="true">
+      <div ref={exportRef} className="visual-export-page pointer-events-none fixed -left-[99999px] top-0 w-[1280px]" aria-hidden="true">
         {data.slides.map((item) => <div key={`export-${item.id}`} className="mb-4"><VisualPage data={data} slide={item} /></div>)}
       </div>
     </div>

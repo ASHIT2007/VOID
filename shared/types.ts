@@ -6,6 +6,8 @@
 // (see server/src/db/index.ts). HuggingFace was dropped in V4 and re-added
 // in V13 via the router.huggingface.co Inference Providers meta-router.
 export type Platform =
+  | 'openai'
+  | 'anthropic'
   | 'google'
   | 'groq'
   | 'cerebras'
@@ -178,6 +180,7 @@ export interface ChatCompletionResponse {
 }
 
 export interface ChatCompletionChunk {
+  usage?: TokenUsage;
   id: string;
   object: 'chat.completion.chunk';
   created: number;

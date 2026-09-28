@@ -2,7 +2,13 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import DynamicLoader, { ProgressMark } from "./DynamicLoader";
+import DynamicLoader from "./DynamicLoader";
+import ProviderLogo from './ProviderLogo';
+import { answerTypographyComponents } from './AnswerTypography';
+import ScrollToLatestButton from './ScrollToLatestButton';
+import { ensurePresentationBrief } from '@/lib/design/presentation-summary';
+import { isNativeChartRequest } from '@/lib/chart-data';
+import VoidImageSkeleton from "./VoidImageSkeleton";
 import { analysisMayBenefitFromChart } from "@/lib/analysis-visuals";
 import { motion, AnimatePresence } from "framer-motion";
 import StudioPreferenceModal from "./StudioPreferenceModal";
@@ -22,6 +28,8 @@ import {
 } from "./ChatInterface.helpers";
 import ThinkingEnergy from "./ThinkingEnergy";
 import { responsePhaseForEvent, type ResponsePhase } from "@/lib/response-stream";
+import { progressLogForEvent, type ProgressLog } from "@/lib/chat-progress";
+import { extractToolProtocol } from '@void/shared/tool-protocol.mjs';
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -72,7 +80,7 @@ import { supabase } from "@/lib/supabase";
 import { normalizePresentation } from "@/lib/design/visual-design-engine";
 import { fetchWithRetry } from "@/lib/reliability";
 import { placeCitationsAtParagraphEnds, stripTrailingSourcesSection } from "@/lib/citations";
-import { imageModelForRequest, POSTER_CLOUDFLARE_MODEL, POSTER_FLUX_MODEL, POSTER_IMAGE_MODEL } from "@/lib/image-model-routing";
+import { imageModelForRequest, POSTER_IMAGE_MODEL } from "@/lib/image-model-routing";
 import { ImageGenerationError } from "@/lib/image-provider-errors";
 import { buildAiPosterPrompt } from "@/lib/poster-generation";
 import { isWebArtifactCreationRequest } from "@/lib/web-generation";
@@ -86,6 +94,9 @@ import MindMapViewer, { parseMindMapData } from "./MindMapViewer";
 import ChartViewer, { parseChartData } from "./ChartViewer";
 import GraphViewer, { parseGraphData } from "./GraphViewer";
 import CodeBlockWithPreview from "./CodeBlockWithPreview";
+import { workspaceStreamEvent } from '@/lib/workspace/device-store';
+import { requestedFileTools } from '@void/shared/file-intent.mjs';
+import DeviceFileLink from './DeviceFileLink';
 import WritingBlock, { inferWritingType } from "./WritingBlock";
 
 type WebSearchResult = { title: string; url: string; content?: string };
@@ -163,11 +174,21 @@ function agentResultLog(data: AgentResultEvent): { action: string; query: string
 }
 
 async function authenticatedJsonHeaders(): Promise<Record<string, string>> {
+  // Keep Basic deployment auth separate from the Supabase user session.
   const { data: { session } } = await supabase.auth.getSession();
   return {
     "Content-Type": "application/json",
-    ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    ...(session?.access_token ? { 'x-void-user-token': session.access_token } : {}),
   };
+}
+async function deviceRoutingOverride() {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.user.id ? localStorage.getItem(`void:routing:${session.user.id}`) || undefined : undefined;
+}
+
+async function chatResponseError(response: Response): Promise<Error> {
+  const payload = await response.json().catch(() => null) as { error?: string } | null;
+  return new Error(payload?.error || `Server returned ${response.status}`);
 }
 
 async function readJsonResponse<T extends Record<string, unknown>>(response: Response): Promise<T> {
@@ -202,6 +223,7 @@ async function readTextSseResponse(response: Response): Promise<string> {
     if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") return;
     try {
       const event = JSON.parse(line.slice(6)) as { type?: string; content?: string; fullText?: string; message?: string };
+      workspaceStreamEvent(event);
       if (event.type === "reset") text = "";
       else if (event.type === "text" && event.content) text += event.content;
       else if (event.type === "done" && !text.trim() && event.fullText) text = event.fullText;
@@ -478,7 +500,7 @@ const ExpandableSearchRow = React.memo(function ExpandableSearchRow({
   let displayTitle = log.action;
   if (isWebSearch) displayTitle = log.query || log.action;
   if (isIntent) displayTitle = "Analyzed intent";
-  if (isGenerating) displayTitle = `Generated response using ${modelName || 'Model'}`;
+  if (isGenerating) displayTitle = "Response ready";
 
   return (
     <div className="flex flex-col relative z-10 mb-8 group">
@@ -733,7 +755,7 @@ function sanitizeSourceSnippet(raw?: string): string {
                       Searching web ({webResults.length} sources)
                     </h3>
                     <p className="text-xs text-gray-400 font-mono mt-0.5 truncate">
-                      Crawled verified web pages & articles
+                      Retrieved web search sources
                     </p>
                   </div>
                   <ChevronDown
@@ -823,7 +845,7 @@ function sanitizeSourceSnippet(raw?: string): string {
               >
                 <div>
                   <h3 className="text-sm font-semibold text-white group-hover:text-gray-200">
-                    Generating response using {msg.modelName || "Llama 3.3 70B"}
+                    Generating response
                   </h3>
                   <p className="text-xs text-gray-400 font-mono mt-0.5">
                     {thinkContent ? "Synthesized research & step-by-step reasoning" : "Synthesized final answer"}
@@ -1502,6 +1524,11 @@ const AutoGlyph = ({ size = 18, active = false }: { size?: number; active?: bool
 );
 
 export const getCompanyLogo = (modelName: string) => {
+  const identity = modelName.toLowerCase();
+  const knownProviders = ['openai', 'anthropic', 'google', 'groq', 'mistral', 'openrouter', 'elevenlabs', 'deepgram', 'cartesia', 'nvidia', 'cloudflare', 'deepseek', 'qwen', 'meta', 'cerebras', 'sambanova'];
+  const brand = knownProviders.find(provider => identity.includes(provider))
+    || (/claude/.test(identity) ? 'anthropic' : /gemini/.test(identity) ? 'google' : /gpt/.test(identity) ? 'openai' : /llama/.test(identity) ? 'meta' : null);
+  if (brand) return <ProviderLogo providerId={brand} name={modelName} size={16} />;
   let iconName = "";
   let needsInvert = false;
   let fallback = false;
@@ -1523,7 +1550,7 @@ export const getCompanyLogo = (modelName: string) => {
   else fallback = true;
 
   if (fallback) {
-    return <AutoGlyph />;
+    return /^(?:auto|automatic|fast|deep|manual|void)(?:\b|$)/i.test(modelName) ? <AutoGlyph /> : <ProviderLogo providerId="custom" name={modelName} size={16} />;
   }
 
   if (iconName === "wikipedia") {
@@ -1648,103 +1675,13 @@ function UserPromptBubble({
   );
 }
 
-const ImageLoaderSkeleton = React.memo(function ImageLoaderSkeleton({ modelName }: { modelName?: string }) {
-  const progressWords = ["Preparing", "Composing", "Rendering", "Refining", "Polishing"];
-  const [progressWordIndex, setProgressWordIndex] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setProgressWordIndex((index) => (index + 1) % progressWords.length);
-    }, 1800);
-    return () => window.clearInterval(timer);
-  }, [progressWords.length]);
-
-  const isWebImage =
-    modelName?.toLowerCase().includes("web") ||
-    modelName?.toLowerCase().includes("wikipedia") ||
-    modelName?.toLowerCase().includes("unsplash") ||
-    modelName?.toLowerCase().includes("wikimedia") ||
-    modelName?.toLowerCase().includes("source");
-
-  if (isWebImage) {
-    return (
-      <span className="block w-full min-h-[150px] sm:min-h-[200px] bg-gray-200 dark:bg-[#1E1E1E] animate-pulse rounded-2xl" />
-    );
-  }
-
-  const cleanModelName = modelName || "FLUX V1";
-
-  return (
-    <span className="block w-full relative isolate overflow-hidden rounded-2xl border border-gray-300 bg-[#F1F1EF] shadow-sm dark:border-[#3A3A3A] dark:bg-[#1D1D1F] aspect-[4/3] sm:aspect-[16/10]">
-      <motion.span
-        aria-hidden="true"
-        className="absolute inset-y-0 w-[32%] bg-white/45 blur-2xl dark:bg-white/[0.035]"
-        animate={{ x: ["-140%", "430%"] }}
-        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut", repeatDelay: 0.25 }}
-      />
-      <span className="absolute inset-3 sm:inset-5 rounded-xl border border-gray-300/80 bg-white/35 dark:border-[#343434] dark:bg-[#202020]" />
-      <motion.span
-        aria-hidden="true"
-        className="absolute inset-x-[14%] top-[17%] h-3 rounded-full bg-gray-300/80 dark:bg-[#343434]"
-        animate={{ opacity: [0.62, 0.92, 0.62] }}
-        transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <motion.span
-        aria-hidden="true"
-        className="absolute inset-x-[27%] top-[25%] h-2.5 rounded-full bg-gray-300/65 dark:bg-[#2D2D2F]"
-        animate={{ opacity: [0.45, 0.78, 0.45] }}
-        transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut", delay: 0.18 }}
-      />
-
-      <span className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 px-6 pt-[12%] text-center">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.span
-            key={cleanModelName}
-            initial={{ opacity: 0, y: 5, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -5, scale: 0.96 }}
-            transition={{ duration: 0.24, ease: "easeInOut" }}
-            className="inline-flex items-center gap-2 rounded-full border border-gray-300 bg-white/90 px-3.5 py-1.5 text-xs font-semibold text-gray-900 shadow-sm dark:border-[#484848] dark:bg-[#272729] dark:text-white"
-          >
-            {getCompanyLogo(cleanModelName)}
-            <span>{cleanModelName}</span>
-          </motion.span>
-        </AnimatePresence>
-        <span className="flex items-center justify-center" aria-label="Generating image">
-          <ProgressMark />
-        </span>
-        <span
-          aria-live="polite"
-          className="flex min-h-7 items-center text-sm font-medium tracking-normal text-gray-600 dark:text-gray-300"
-        >
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.span
-              key={progressWords[progressWordIndex]}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {progressWords[progressWordIndex]}
-            </motion.span>
-          </AnimatePresence>
-          {[0, 1, 2].map((dot) => (
-            <motion.span
-              key={dot}
-              animate={{ opacity: [0.2, 1, 0.2], y: [0, -3, 0] }}
-              transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.18, ease: "easeInOut" }}
-            >
-              .
-            </motion.span>
-          ))}
-        </span>
-      </span>
-    </span>
-  );
+const ImageLoaderSkeleton = React.memo(function ImageLoaderSkeleton(_props: { modelName?: string }) {
+  return <VoidImageSkeleton />;
 });
 
 function ImageGenerationLoader({ modelName }: { modelName?: string }) {
   return (
-    <div className="w-full min-w-0 max-w-4xl xl:max-w-5xl mx-auto py-3 px-2 sm:px-4">
+    <div className="w-full min-w-0 max-w-[560px] mx-auto py-3">
       <ImageLoaderSkeleton modelName={modelName} />
     </div>
   );
@@ -1824,7 +1761,7 @@ async function generateRasterPosterAsset(
   rawPrompt: string,
   signal: AbortSignal,
   onModelChange?: (modelName: string) => void,
-): Promise<{ url: string; modelUsed: string }> {
+): Promise<{ url: string; modelUsed: string; notice?: string }> {
   if (isInfographicCreationRequest(rawPrompt)) {
     onModelChange?.(VECTOR_INFOGRAPHIC_MODEL);
     return generateVectorInfographicAsset(rawPrompt, signal);
@@ -1838,31 +1775,13 @@ async function generateRasterPosterAsset(
       body: JSON.stringify({ prompt: finalPrompt, model, quality: "high", size }),
       signal,
     }, { attempts: 1, connectTimeoutMs: 180_000 });
-    const payload = await readJsonResponse<{ url?: string; modelUsed?: string; error?: string }>(response);
+    const payload = await readJsonResponse<{ url?: string; modelUsed?: string; error?: string; notice?: string }>(response);
     if (!response.ok || !payload.url) throw new Error(payload.error || "Failed to generate poster");
-    return { url: payload.url, modelUsed: payload.modelUsed || model };
+    return { url: payload.url, modelUsed: payload.modelUsed || model, notice: payload.notice };
   };
 
-  try {
-    onModelChange?.(POSTER_IMAGE_MODEL);
-    return await requestModel(POSTER_IMAGE_MODEL);
-  } catch (geminiError) {
-    if (signal.aborted) throw geminiError;
-  }
-  try {
-    onModelChange?.("Cloudflare FLUX.1 Schnell");
-    return await requestModel(POSTER_CLOUDFLARE_MODEL);
-  } catch (cloudflareError) {
-    if (signal.aborted) throw cloudflareError;
-  }
-  try {
-    onModelChange?.("FLUX 1.1 Pro");
-    return await requestModel(POSTER_FLUX_MODEL);
-  } catch (fluxError) {
-    if (signal.aborted) throw fluxError;
-  }
-
-  throw new Error("No AI image provider could generate this poster right now. Please retry in a moment.");
+  onModelChange?.("Auto");
+  return requestModel("Auto");
 }
 
 // Component that generates an image from a text prompt through VOID's server-side providers.
@@ -1878,13 +1797,15 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
   messageId?: string;
   model?: string;
   userEmail?: string | null;
-  onGenerated?: (msgId: string, prompt: string, url: string) => void;
+  onGenerated?: (msgId: string, prompt: string, url: string, notice?: string) => void;
   onLoadedStateChange?: (loaded: boolean) => void;
 }) {
   const [state, setState] = React.useState<"loading" | "loaded" | "error">(
     "loading",
   );
   const [imageUrl, setImageUrl] = React.useState<string | null>(null);
+  const [imageNotice, setImageNotice] = React.useState<string | null>(null);
+  const [imageError, setImageError] = React.useState('Image failed to generate');
   const [imgLoaded, setImgLoaded] = React.useState(false);
   const [imgRetryCount, setImgRetryCount] = React.useState(0);
   const [retryCount, setRetryCount] = React.useState(0);
@@ -1907,7 +1828,7 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
 
   React.useEffect(() => {
     if (imgLoaded && generatedUrlRef.current && messageId && onGenerated) {
-      onGenerated(messageId, prompt, generatedUrlRef.current);
+      onGenerated(messageId, prompt, generatedUrlRef.current, imageNotice || undefined);
     }
   }, [imgLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1931,7 +1852,7 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
           body: JSON.stringify({ prompt: finalPrompt, model, userEmail }),
           signal: controller.signal,
         }, { attempts: 1, connectTimeoutMs: 180_000 });
-        const data = await readJsonResponse<{ url?: string; modelUsed?: string; error?: string }>(res);
+        const data = await readJsonResponse<{ url?: string; modelUsed?: string; error?: string; notice?: string }>(res);
         if (!res.ok) throw new Error(data.error || "Failed to generate image");
 
         clearTimeout(timeoutId);
@@ -1939,6 +1860,7 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
         if (!cancelled) {
           if (data.url) {
             setImageUrl(data.url);
+            setImageNotice(data.notice || null);
             if (data.modelUsed) setModelName(data.modelUsed);
             generatedUrlRef.current = data.url;
             setState("loaded");
@@ -1951,6 +1873,7 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
         clearTimeout(timeoutId);
         if (!cancelled) {
           console.error("Image generation error:", err);
+          setImageError(err instanceof Error ? err.message : 'Image failed to generate');
           setState("error");
         }
       }
@@ -1982,14 +1905,15 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
   }
 
   return (
-    <span className="block relative group w-full max-w-4xl mx-auto my-6 rounded-2xl border border-gray-200 dark:border-[#3A3A3A] overflow-hidden shadow-md bg-gray-50 dark:bg-[#1E1E1E]">
+    <span className="block">
+    {imageNotice && <span role="status" className="mb-3 block text-sm leading-relaxed text-gray-600 dark:text-gray-300">{imageNotice}</span>}
+    <span className="block relative group w-full max-w-[560px] aspect-square mx-auto my-6 rounded-2xl border border-gray-200 dark:border-[#3A3A3A] overflow-hidden shadow-md bg-gray-50 dark:bg-[#1E1E1E]">
       {(state === "loading" || (state === "loaded" && !imgLoaded)) && (
         <ImageLoaderSkeleton modelName={detectedModelName || model} />
       )}
       {state === "error" && (
         <span
-          className="block w-full flex flex-col items-center justify-center gap-3 py-12 text-gray-400 dark:text-gray-500"
-          style={{ aspectRatio: "16/9" }}
+          className="flex h-full w-full flex-col items-center justify-center gap-3 text-gray-400 dark:text-gray-500"
         >
           <svg
             className="w-10 h-10"
@@ -2004,7 +1928,7 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
               d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
             />
           </svg>
-          <span className="text-sm font-medium">Image failed to generate</span>
+          <span role="alert" className="max-w-sm px-5 text-center text-sm font-medium leading-relaxed">{imageError}</span>
           <button
             onClick={() => setRetryCount((c) => c + 1)}
             className="px-4 py-1.5 rounded-xl bg-gray-900 text-white dark:bg-white dark:text-black text-xs font-semibold hover:opacity-90 transition-all shadow-sm active:scale-95"
@@ -2018,7 +1942,7 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
           <img
             src={imgRetryCount > 0 ? `${imageUrl}&ts=${imgRetryCount}` : imageUrl}
             alt={prompt}
-            className={`w-full h-auto object-contain transition-opacity duration-500 ${imgLoaded ? "opacity-100" : "opacity-0 absolute"}`}
+            className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-500 ${imgLoaded ? "opacity-100" : "opacity-0"}`}
             onLoad={() => setImgLoaded(true)}
             onError={() => {
               if (imgRetryCount < 2) {
@@ -2126,6 +2050,7 @@ const GeneratedImageBlock = React.memo(function GeneratedImageBlock({
         </>
       )}
     </span>
+    </span>
   );
 });
 
@@ -2213,7 +2138,7 @@ const MarkdownImage = React.memo(function MarkdownImage({
   const isPosterResult = typeof onCustomizePoster === "function";
   const containerClass = isPosterResult
     ? "clear-both relative mx-auto my-6 block w-full max-w-2xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-lg dark:border-white/10 dark:bg-[#171717]"
-    : isCharacter
+    : isCharacter && !isGenerated
     ? "clear-both relative my-6 block w-full max-w-sm overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 shadow-sm dark:border-[#3A3A3A] dark:bg-[#202020]"
     : isDiagram 
     ? "block relative group w-full max-w-4xl mx-auto my-6 rounded-2xl border border-gray-200 dark:border-[#3A3A3A] overflow-hidden shadow-lg bg-black/5 dark:bg-white/5"
@@ -2221,16 +2146,16 @@ const MarkdownImage = React.memo(function MarkdownImage({
 
   const imgClass = isPosterResult
     ? `mx-auto block ${artifactKind === "infographic" ? "h-auto w-full" : "max-h-[min(74vh,720px)] w-full object-contain"} transition-all duration-700 ease-out cursor-pointer hover:opacity-95 ${imgState === "loaded" ? "opacity-100 scale-100 blur-0" : "opacity-0 scale-[1.03] blur-xs absolute"}`
-    : isCharacter
+    : isCharacter && !isGenerated
     ? `w-full h-auto max-h-56 object-contain transition-all duration-700 ease-out cursor-pointer hover:scale-[1.02] ${imgState === "loaded" ? "opacity-100 scale-100 blur-0" : "opacity-0 scale-[1.03] blur-xs absolute"}`
     : isGenerated
-      ? `w-full h-auto max-h-[680px] object-contain transition-all duration-700 ease-out cursor-pointer hover:opacity-90 ${imgState === "loaded" ? "opacity-100 scale-100 blur-0" : "opacity-0 scale-[1.03] blur-xs absolute"}`
+      ? `absolute inset-0 h-full w-full object-contain transition-all duration-700 ease-out cursor-pointer hover:opacity-90 ${imgState === "loaded" ? "opacity-100 scale-100 blur-0" : "opacity-0 scale-[1.03] blur-xs"}`
       : `w-full h-auto max-h-72 object-contain transition-all duration-700 ease-out cursor-pointer hover:opacity-90 ${imgState === "loaded" ? "opacity-100 scale-100 blur-0" : "opacity-0 scale-[1.03] blur-xs absolute"}`;
 
   return (
     <span
       className={containerClass}
-      style={isGenerated ? { width: "min(100%, 720px)", minHeight: imgState === "loading" ? "300px" : undefined } : undefined}
+      style={isGenerated && !isPosterResult ? { width: "min(100%, 560px)", aspectRatio: "1 / 1" } : undefined}
       onClick={() => setPreviewAttachment?.({ name: alt || "Image", url: imgSrc, type: "image/png" })}
     >
       {isPosterResult && (
@@ -2263,7 +2188,9 @@ const MarkdownImage = React.memo(function MarkdownImage({
       )}
       {isPosterResult && customizeError && <span className="block border-b border-gray-200 px-3 py-2 text-[11px] text-gray-600 dark:border-white/10 dark:text-gray-300">{customizeError}</span>}
       {imgState === "loading" && (
-        <span className="flex w-full min-w-0 h-full min-h-[300px] items-center justify-center">
+        <span className={isGenerated && !isPosterResult
+          ? "absolute inset-0 flex w-full min-w-0 items-center justify-center"
+          : "flex w-full min-w-0 items-center justify-center"}>
           <ImageLoaderSkeleton modelName={detectedModelName} />
         </span>
       )}
@@ -2375,17 +2302,28 @@ const MemoizedMarkdown = React.memo(function MemoizedMarkdown({
   isStreaming,
   revealEnabled = true,
   animatePlayback = isStreaming,
+  typingKey,
+  onTypingChange,
 }: {
   content: string;
   markdownComponents: any;
   isStreaming?: boolean;
   revealEnabled?: boolean;
   animatePlayback?: boolean;
+  typingKey?: string;
+  onTypingChange?: (key: string, active: boolean) => void;
 }) {
-  const displayedText = useSmoothTypewriter(content, Boolean(isStreaming), revealEnabled, Boolean(animatePlayback));
-  const isActivelyTyping = revealEnabled && (Boolean(isStreaming) || displayedText.length < content.length);
+  const structuredOutput = /```(?:chart|barchart|visualization|plot|gamma-presentation|gamma|presentation|ppt|slides|canva-doc|canva|report|doc)\b/i.test(content)
+    || /```json[\s\S]*?"(?:bars|slices|scatterPoints|points|stackedBars|slides|sections)"\s*:/i.test(content);
+  const displayedText = useSmoothTypewriter(content, Boolean(isStreaming), revealEnabled && !structuredOutput, Boolean(animatePlayback));
+  const isActivelyTyping = !structuredOutput && revealEnabled && (Boolean(isStreaming) || displayedText.length < content.length);
+  useEffect(() => {
+    if (!typingKey || !onTypingChange) return;
+    onTypingChange(typingKey, isActivelyTyping);
+    return () => onTypingChange(typingKey, false);
+  }, [typingKey, onTypingChange, isActivelyTyping]);
 
-  const rawText = normalizeGeneratedBreakTags(displayedText);
+  const rawText = normalizeGeneratedBreakTags(structuredOutput ? content : displayedText);
   const safeText = isActivelyTyping ? completePartialMarkdown(rawText) : rawText;
   const processedText = preprocessLaTeX(safeText);
 
@@ -2403,7 +2341,7 @@ const MemoizedMarkdown = React.memo(function MemoizedMarkdown({
   }, [displayedText, isActivelyTyping]);
 
   return (
-    <div className="relative">
+    <div className="answer-markdown relative">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
@@ -2921,6 +2859,7 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
   conversationId,
   markdownComponents,
   setPreviewAttachment,
+  onTypingChange,
 }: {
   msg: any;
   index: number;
@@ -2936,12 +2875,13 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
   conversationId?: string;
   markdownComponents: any;
   setPreviewAttachment?: (a: any) => void;
+  onTypingChange?: (key: string, active: boolean) => void;
 }) {
   const { theme } = useTheme();
   const [animateGeneratedText] = React.useState(Boolean(msg?.isStreaming));
   const [loadedMediaKey, setLoadedMediaKey] = React.useState("");
   const rawContent = typeof msg?.content === "string" ? msg.content : "";
-  const { thinkContent, displayContent: cleanDisplayContent } = extractThinkAndDisplayContent(rawContent);
+  const { thinkContent, displayContent: cleanDisplayContent } = extractThinkAndDisplayContent(rawContent, previousUserContent);
   let displayContent = normalizeGeneratedBreakTags(cleanDisplayContent);
 
   const msgForPill = { ...msg };
@@ -3002,6 +2942,13 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
   }
 
   msgForPill.statusLogs = visibleProgressLogs(msgForPill.statusLogs);
+  if (!msg.isStreaming && isPresentationCreationRequest(previousUserContent)) {
+    const deck = parseLatestStudioPresentation(displayContent);
+    if (deck?.slides?.length) displayContent = ensurePresentationBrief(displayContent, deck);
+  }
+  if (!msg.isStreaming && !displayContent.trim() && extractToolProtocol(rawContent).hasProtocol) {
+    displayContent = 'This response ended before an answer was ready. Please retry.';
+  }
 
   const isPresentationReview = /\b(?:rate|review|evaluate|critique|score|assess)\b[\s\S]{0,80}\b(?:presentation|powerpoint|pptx?|slide deck|slides)\b/i.test(previousUserContent)
     && !isPresentationCreationRequest(previousUserContent);
@@ -3254,6 +3201,11 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
           );
         }
 
+        const chartRequestedByUser = isNativeChartRequest(previousUserContent);
+        const isChartBlock = ["chart", "barchart", "visualization", "plot"].includes(lang) || chartRequestedByUser
+          || (lang === 'json' && analysisMayBenefitFromChart(previousUserContent) && /"(?:bars|slices|points|scatterPoints|type)"\s*:/.test(rawCode));
+        if (isChartBlock && msg.isStreaming) return <DynamicLoader customGerund="Plotting your chart" />;
+
         const writingType = inferWritingType(rawCode, lang);
         if (writingType) {
           return (
@@ -3266,25 +3218,21 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
         }
 
         const parsedStudio = parseStudioJson(rawCode);
-        const chartRequestedByUser = /\b(?:chart|graph|plot|data visualization|visualise|visualize)\b/i.test(previousUserContent)
-          && /\b(?:make|create|generate|build|draw|plot|show|compare|visualise|visualize)\b/i.test(previousUserContent);
         // Several fallback models return the correct native-chart JSON under a
         // generic `json` fence. The user's request plus schema validation is a
         // safer discriminator than trusting the fence label alone.
-        const chartData = (["chart", "barchart", "visualization", "plot"].includes(lang)
-          || (lang === "json" && (chartRequestedByUser || analysisMayBenefitFromChart(previousUserContent))))
-          ? parseChartData(rawCode)
-          : null;
+        const chartData = isChartBlock ? parseChartData(rawCode) : null;
 
         if (chartData) {
           return (
-            <div className="my-5 w-full overflow-x-auto rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-[#3A3A3A] dark:bg-[#242424]">
-              <div className="min-w-[520px]">
+            <div className="my-5 w-full overflow-x-auto">
+              <div className="min-w-[300px]">
                 <ChartViewer data={chartData} />
               </div>
             </div>
           );
         }
+        if (isChartBlock) return <p className="answer-paragraph">The chart data could not be plotted. Please retry.</p>;
 
         // 1. Presentation detection:
         const isPresentationBlock =
@@ -3488,14 +3436,7 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
   );
 
   // 8. Fallback thought content using status logs if LLM didn't output <think>
-  const uniqueStatusLogs = Array.from(
-    new Map(
-      visibleProgressLogs(msgForPill.statusLogs).map((log: any) => [
-        `${log.action || ""}|${log.query || ""}`,
-        log,
-      ]),
-    ).values(),
-  ) as any[];
+  const uniqueStatusLogs = visibleProgressLogs(msgForPill.statusLogs);
   const fallbackThinkContent = (uniqueStatusLogs.length > 0 && msg.content && msg.content.trim())
     ? uniqueStatusLogs.map((log: any) => `- ${log.action}${log.query ? ` (${log.query})` : ''}`).join('\n')
     : null;
@@ -3503,9 +3444,9 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
 
   return (
     <>
-      {msg.isStreaming && !displayContent.trim() && (
+      {msg.isStreaming && (msg.responsePhase === 'thinking' || !displayContent.trim()) && (
         <DynamicLoader
-          stage={loadingStage}
+          stage={msg.responsePhase || loadingStage}
           webSearchEnabled={isWebSearch}
           isGeneratingImage={false}
           prompt={previousUserContent}
@@ -3557,11 +3498,11 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
                 onLoadedStateChange={(loaded) => {
                   if (loaded) setImageLoaded(true);
                 }}
-                onGenerated={async (id, p, url) => {
+                onGenerated={async (id, p, url, notice) => {
                   imageReplacementsRef.current[p] = url;
                   const newContent = msg.content.replace(
                     `[GENERATE_IMAGE: ${p}]`,
-                    `![${p}](${url})`,
+                    `${notice ? `${notice}\n\n` : ''}![${p}](${url})`,
                   );
 
                   setMessages((prev) =>
@@ -3675,6 +3616,8 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
           return (
             <MemoizedMarkdown
               key={`text-${segIdx}`}
+              typingKey={`${msg.id || index}:${segIdx}`}
+              onTypingChange={onTypingChange}
               content={cleanTextContent}
               markdownComponents={customMarkdownComponents}
               isStreaming={msg.isStreaming && isLastSegment}
@@ -3744,6 +3687,15 @@ export default function ChatInterface({
 }: ChatInterfaceProps) {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [revealingParts, setRevealingParts] = useState<Record<string, boolean>>({});
+  const onTypingChange = useCallback((key: string, active: boolean) => {
+    setRevealingParts(previous => {
+      if (Boolean(previous[key]) === active) return previous;
+      const next = { ...previous };
+      if (active) next[key] = true; else delete next[key];
+      return next;
+    });
+  }, []);
   const [currentContextTokens, setCurrentContextTokens] = useState(0);
   const [activeArtifact, setActiveArtifact] = useState<Artifact | null>(null);
   const [loadingText, setLoadingText] = useState("Thinking...");
@@ -3829,44 +3781,59 @@ export default function ChatInterface({
   const completionChimeRef = useRef<CompletionChimeController | null>(null);
   const completionChimeArmedRef = useRef(false);
   const leftTabDuringGenerationRef = useRef(false);
+  const pendingNotificationPromptRef = useRef<string>("");
 
-  const armCompletionChime = useCallback(() => {
+  const armCompletionChime = useCallback((prompt?: string) => {
     completionChimeArmedRef.current = true;
+    if (prompt) pendingNotificationPromptRef.current = prompt;
     leftTabDuringGenerationRef.current = typeof document !== "undefined"
-      && document.visibilityState === "hidden";
+      && (document.visibilityState === "hidden" || !document.hasFocus());
     completionChimeRef.current ??= createCompletionChime();
-    void completionChimeRef.current.prime().catch(() => {
-      // Audio may be blocked by browser/device policy; generation must continue.
+    void completionChimeRef.current.prime(prompt).catch(() => {
+      // Audio or notifications may be blocked by browser/device policy; generation must continue.
     });
   }, []);
 
   const disarmCompletionChime = useCallback(() => {
     completionChimeArmedRef.current = false;
     leftTabDuringGenerationRef.current = false;
+    pendingNotificationPromptRef.current = "";
   }, []);
 
-  const announceGenerationComplete = useCallback(() => {
-    const shouldPlay = completionChimeArmedRef.current
-      && leftTabDuringGenerationRef.current
-      && typeof document !== "undefined"
-      && document.visibilityState === "hidden";
+  const announceGenerationComplete = useCallback((payload?: { prompt?: string; answer?: string }) => {
+    const isAway = leftTabDuringGenerationRef.current
+      || (typeof document !== "undefined" && (document.visibilityState === "hidden" || !document.hasFocus()));
+    const shouldNotify = completionChimeArmedRef.current && isAway;
+    const prompt = payload?.prompt || pendingNotificationPromptRef.current;
+    const answer = payload?.answer || "";
+
     disarmCompletionChime();
-    if (shouldPlay) {
-      void completionChimeRef.current?.play().catch(() => {
-        // Keep completion silent when a browser/device disallows background audio.
+    if (shouldNotify) {
+      void completionChimeRef.current?.notify({
+        prompt,
+        answer,
+        onClick: () => {
+          try {
+            window.focus();
+          } catch {}
+        },
+      }).catch(() => {
+        // Keep completion silent when a browser/device disallows background audio or notifications.
       });
     }
   }, [disarmCompletionChime]);
 
   useEffect(() => {
     const markTabAsLeft = () => {
-      if (completionChimeArmedRef.current && document.visibilityState === "hidden") {
+      if (completionChimeArmedRef.current && (document.visibilityState === "hidden" || !document.hasFocus())) {
         leftTabDuringGenerationRef.current = true;
       }
     };
     document.addEventListener("visibilitychange", markTabAsLeft);
+    window.addEventListener("blur", markTabAsLeft);
     return () => {
       document.removeEventListener("visibilitychange", markTabAsLeft);
+      window.removeEventListener("blur", markTabAsLeft);
       void completionChimeRef.current?.destroy();
       completionChimeRef.current = null;
     };
@@ -4222,24 +4189,6 @@ export default function ChatInterface({
       // Persist every attachment when storage is available. Keeping even a
       // 2–4 MB base64 string in React state and chat history makes each later
       // render and request copy that payload again.
-      const fileName = `${Date.now()}-${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, "_")}`;
-      const { data, error } = await supabase.storage
-        .from("chat-attachments")
-        .upload(fileName, file, {
-          contentType: file.type || "application/octet-stream",
-          upsert: false,
-        });
-
-      if (!error && data) {
-        const { data: urlData } = supabase.storage
-          .from("chat-attachments")
-          .getPublicUrl(data.path);
-        newAttachments.push({
-          url: urlData.publicUrl,
-          name: file.name,
-          type: file.type || "application/octet-stream",
-        });
-      } else {
         try {
           const form = new FormData();
           form.append('file', file);
@@ -4262,7 +4211,6 @@ export default function ChatInterface({
             alert(`Could not upload ${file.name}: ${error instanceof Error ? error.message : 'Please retry.'}`);
           }
         }
-      }
     }
 
     try {
@@ -4360,11 +4308,13 @@ export default function ChatInterface({
     const containsImageGenerationVerb = /\b(?:generate|genrate|genarate|generat|create|make|design|draw|render|paint|illustrate)\b/i.test(normalizedRequest);
     const isHybridImageRequest = containsImageGenerationVerb && namesVisualOutput && asksForTextOutput;
     const isNaturalImageRequest = isNaturalImageGeneration(normalizedRequest);
+    const isStructuredRequest = requestedFileTools(normalizedRequest).length > 0 || /\b(?:mind[ -]?map|mermaid|flowchart|diagram|chart|graph)\b/i.test(normalizedRequest);
     const isStudioRequest = isStudioCreationRequest(normalizedRequest);
     const isRasterPosterRequest = isRasterPosterCreationRequest(normalizedRequest);
     const isRasterInfographicRequest = isRasterPosterRequest && isInfographicCreationRequest(normalizedRequest);
     const previousConversationImage = latestConversationImage(messages);
-    const isConversationalImageEdit = referencesPreviousImage(normalizedRequest)
+    const isConversationalImageEdit = (!isRasterPosterRequest || /\b(?:edit|modify|restyle|rework|replace|remove|add to|same image|same poster|use (?:this|that|the previous) image)\b/i.test(normalizedRequest))
+      && referencesPreviousImage(normalizedRequest)
       && Boolean(previousConversationImage);
     const isExplicitTextQuery = /^\s*(research|explain|write|how|what|why|compare|solve|code|summarize|list|tell me|who|when|where|can you|help|find|search)\b/i.test(textToSend.trim());
     const isImageModel = selectedModel.includes("FLUX") || selectedModel === "HF Super Realism" || selectedModel === "Ideogram" || selectedModel === "Gemini Image" || selectedModel === "Cloudflare SDXL" || selectedModel === "cloudflare-sdxl";
@@ -4374,7 +4324,7 @@ export default function ChatInterface({
     // request into a web-image lookup. `isImageMode` can briefly be stale
     // after settings/model updates, so it must never route ordinary text.
     const shouldGenerateImage = isExplicitImageCommand
-      || (!isStudioRequest && (isNaturalImageRequest
+      || (!isStructuredRequest && !isStudioRequest && (isNaturalImageRequest
         || isHybridImageRequest
         || isConversationalImageEdit
         || (isImageModel && !isExplicitTextQuery)));
@@ -4392,10 +4342,9 @@ export default function ChatInterface({
         return;
       }
 
-      armCompletionChime();
+      armCompletionChime(prompt);
 
-      // Finished raster posters intentionally use Nano Banana. Every other
-      // image request stays on the image model saved in Settings.
+      // All visuals honor the saved preference; the server resolves compatible fallback providers.
       const requestedImageModel = isRasterInfographicRequest
         ? VECTOR_INFOGRAPHIC_MODEL
         : imageModelForRequest(defaultImageModel, isRasterPosterRequest);
@@ -4449,6 +4398,7 @@ export default function ChatInterface({
 
                     attachments: [],
                     conversationId: `${agentSessionIdRef.current}-image-explanation-${Date.now()}`,
+                    routingOverride: await deviceRoutingOverride(),
                     userId,
                     userEmail,
                     isWebSearch: false,
@@ -4470,7 +4420,7 @@ export default function ChatInterface({
           || (isConversationalImageEdit ? previousConversationImage?.url : undefined);
         const sourcePrompt = attachedImageInput ? undefined : previousConversationImage?.sourcePrompt;
         const posterImageSize = /\b(?:landscape|horizontal|wide|banner)\b/i.test(finalPrompt) ? "1536x1024" : "1024x1536";
-        let data: { url?: string; modelUsed?: string; error?: string; warnings?: string[] };
+        let data: { url?: string; modelUsed?: string; error?: string; warnings?: string[]; notice?: string };
         const showGeneratingModel = (modelName: string) => setMessages((current) => {
           const next = [...current];
           const last = next[next.length - 1];
@@ -4490,7 +4440,7 @@ export default function ChatInterface({
             }),
             signal: imageAbortController.signal,
           }, { attempts: 1, connectTimeoutMs: 180_000 });
-          const responseData = await readJsonResponse<{ url?: string; modelUsed?: string; error?: string }>(res);
+          const responseData = await readJsonResponse<{ url?: string; modelUsed?: string; error?: string; notice?: string }>(res);
           if (!res.ok) throw new ImageGenerationError(responseData.error || "Failed to generate image");
           return responseData;
         };
@@ -4498,30 +4448,8 @@ export default function ChatInterface({
           showGeneratingModel(VECTOR_INFOGRAPHIC_MODEL);
           data = await generateVectorInfographicAsset(rawImagePrompt, imageAbortController.signal);
         } else if (isRasterPosterRequest) {
-          try {
-            // Keep poster providers server-side. Browser-side Puter calls can
-            // inject their own balance dialog into VOID, which breaks the
-            // generation experience and cannot be styled or dismissed by us.
-            data = await generateWithSelectedServerModel(POSTER_IMAGE_MODEL);
-          } catch (serverPosterError) {
-            if (imageAbortController.signal.aborted) throw serverPosterError;
-            console.warn("Gemini poster generation was unavailable; trying Cloudflare:", serverPosterError);
-            try {
-              showGeneratingModel("Cloudflare FLUX.1 Schnell");
-              data = await generateWithSelectedServerModel(POSTER_CLOUDFLARE_MODEL);
-            } catch (cloudflarePosterError) {
-              if (imageAbortController.signal.aborted) throw cloudflarePosterError;
-              console.warn("Cloudflare poster generation was unavailable; trying FLUX:", cloudflarePosterError);
-              try {
-                showGeneratingModel("FLUX 1.1 Pro");
-                data = await generateWithSelectedServerModel(POSTER_FLUX_MODEL);
-              } catch (fluxPosterError) {
-                if (imageAbortController.signal.aborted) throw fluxPosterError;
-                console.warn("Every AI poster provider was unavailable:", fluxPosterError);
-                throw new Error("No AI image provider could generate this poster right now. Please retry in a moment.");
-              }
-            }
-          }
+          // One server request owns BYOK priority, role checks and managed fallback.
+          data = await generateWithSelectedServerModel(requestedImageModel);
         } else {
           data = await generateWithSelectedServerModel(requestedImageModel);
         }
@@ -4567,7 +4495,7 @@ export default function ChatInterface({
           : isRasterPosterRequest
             ? "poster"
             : "image";
-        const assistantResponse = `Here is the ${generatedVisualName} you requested:\n\n![Generated ${generatedVisualName} for ${prompt.replace(/\s+/g, ' ')} | model=${actualModelUsed}](${data.url})${data.warnings?.length ? `\n\n${data.warnings.join(' ')}` : ''}${companionText ? `\n\n${companionText}` : ""}\n\n[META_JSON: ${JSON.stringify({ thoughtTime: imageThoughtTime, model: actualModelUsed })}]`;
+        const assistantResponse = `${data.notice ? `${data.notice}\n\n` : ''}Here is the ${generatedVisualName} you requested:\n\n![Generated ${generatedVisualName} for ${prompt.replace(/\s+/g, ' ')} | model=${actualModelUsed}](${data.url})${data.warnings?.length ? `\n\n${data.warnings.join(' ')}` : ''}${companionText ? `\n\n${companionText}` : ""}\n\n[META_JSON: ${JSON.stringify({ thoughtTime: imageThoughtTime, model: actualModelUsed })}]`;
         const compactNewMessages = newMessages.map((message, index) => (
           index === newMessages.length - 1 && message.attachments
             ? { ...message, attachments: compactAttachmentsForHistory(message.attachments) }
@@ -4577,7 +4505,10 @@ export default function ChatInterface({
           ...compactNewMessages,
           { role: "assistant" as const, content: assistantResponse, thoughtTime: imageThoughtTime, modelName: actualModelUsed },
         ]);
-        announceGenerationComplete();
+        announceGenerationComplete({
+          prompt,
+          answer: assistantResponse,
+        });
 
         if (!isIncognito) {
           let activeConvId = conversationId;
@@ -4591,6 +4522,7 @@ export default function ChatInterface({
               .insert([
                 {
                   title: textToSend.substring(0, 30) || "Image Generation",
+                  id: agentSessionIdRef.current,
                   user_id: session.user.id,
                 },
               ])
@@ -4688,7 +4620,7 @@ export default function ChatInterface({
           currentHistoryAttachments.length > 0 ? currentHistoryAttachments : undefined,
       },
     ];
-    armCompletionChime();
+    armCompletionChime(displayContent || requestContent);
     const requestMessages = prepareStudioMessages(compactMessagesForTransport(newMessages.map((message, messageIndex) =>
       messageIndex === newMessages.length - 1 ? { ...message, content: requestContent } : message,
     )));
@@ -4702,7 +4634,7 @@ export default function ChatInterface({
       let currentPhase: ResponsePhase = "thinking";
       let currentEffortInfo: EffortInfo | undefined;
       let currentEffortRecovery: string | undefined;
-      let currentLogs: { action: string; query: string }[] = [];
+      let currentLogs: ProgressLog[] = [];
       let currentSources: string[] = [];
       let currentWebSearch: WebSearchData | undefined = undefined;
       let currentMedia: MediaPayload | undefined = undefined;
@@ -4751,6 +4683,7 @@ export default function ChatInterface({
 
           attachments: requestAttachments,
           conversationId: agentSessionIdRef.current,
+          routingOverride: await deviceRoutingOverride(),
           userId: userId,
           userEmail: userEmail,
           isWebSearch: isWebSearch,
@@ -4759,7 +4692,7 @@ export default function ChatInterface({
 
       if (!response.ok) {
         clearInterval(timerInterval);
-        throw new Error(`Server returned ${response.status}`);
+        throw await chatResponseError(response);
       }
 
       if (!response.body) throw new Error("No response body");
@@ -4811,13 +4744,14 @@ export default function ChatInterface({
             if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
               try {
                 const data = JSON.parse(line.slice(6));
+                workspaceStreamEvent(data);
                 currentPhase = responsePhaseForEvent(data, currentPhase);
                 if (data.type === "effort") currentEffortInfo = data;
                 if (data.type === "effort_recovery") currentEffortRecovery = data.message;
                 if (data.type === "status") {
                   currentLogs = [
                     ...currentLogs,
-                    { action: data.action, query: data.query },
+                    progressLogForEvent(data),
                   ];
                 } else if (data.type === "searchIntent") {
                   currentSearchIntent = {
@@ -4834,7 +4768,7 @@ export default function ChatInterface({
                 } else if (data.type === "media") {
                   currentMedia = mergeMediaPayload(currentMedia, data);
                 } else if (data.type === "media_status") {
-                  currentLogs = [...currentLogs, { action: data.label || "Web image update", query: data.reason || "" }];
+                  currentLogs = [...currentLogs, progressLogForEvent(data)];
                 } else if (data.type === "text") {
                   streamingContent += typeof data.content === 'string' ? data.content : '';
                 } else if (data.type === "reset") {
@@ -4848,8 +4782,8 @@ export default function ChatInterface({
                 } else if (data.type === "agent_plan") {
                   currentLogs = [...currentLogs, { action: "Planning the work", query: "" }];
                 } else if (data.type === "agent_status") {
-                  const progress = visibleProgressLogs([{ action: data.label || "Reviewing the request" }]);
-                  currentLogs = [...currentLogs, ...progress.map((log) => ({ action: log.action || "Reviewing the request", query: log.query || "" }))];
+                  const progress = visibleProgressLogs([progressLogForEvent(data)]);
+                  currentLogs = [...currentLogs, ...progress.map((log) => ({ ...log, action: log.action || "Reviewing your request", query: log.query || "" }))];
                 } else if (data.type === "agent_result") {
                   currentLogs = [...currentLogs, agentResultLog(data)];
                 } else if (data.type === "usage") {
@@ -4927,7 +4861,10 @@ export default function ChatInterface({
         }
         return newM;
       });
-      announceGenerationComplete();
+      announceGenerationComplete({
+        prompt: displayContent || requestContent,
+        answer: streamingContent,
+      });
       // Quality Validation (Component 7): Check generated artifacts for common issues
       const validateArtifactQuality = (data: any, type: string): void => {
         const issues: string[] = [];
@@ -4950,8 +4887,8 @@ export default function ChatInterface({
 
       // Auto-launch artifact Preview when AI generation completes
       const latestUserRequest = [...newMessages].reverse().find((message) => message.role === "user")?.content || "";
-      const wasPosterRequest = isPosterCreationRequest(latestUserRequest);
-      const wasPresentationRequest = isPresentationCreationRequest(latestUserRequest);
+      const wasPosterRequest = !requestedFileTools(latestUserRequest).length && isPosterCreationRequest(latestUserRequest);
+      const wasPresentationRequest = !requestedFileTools(latestUserRequest).length && isPresentationCreationRequest(latestUserRequest);
       const wasWebArtifactRequest = isWebArtifactCreationRequest(latestUserRequest);
       const artifactGenerationFailed = /(?:couldn['’]t|could not|unable to|failed to)\s+(?:complete|finish|generate|create)[\s\S]{0,100}(?:response|presentation|poster)|no final answer was produced|response time budget was reached/i.test(streamingContent);
 
@@ -5177,6 +5114,7 @@ export default function ChatInterface({
             .insert([
               {
                 title: displayContent.substring(0, 30) || "File Analysis",
+                id: agentSessionIdRef.current,
                 user_id: session.user.id,
               },
             ])
@@ -5498,7 +5436,7 @@ const handleRegenerate = async (index: number) => {
     ...suffixMessages,
   ];
   const regenerateAttachments = getMessageAttachments(prevMsg);
-  armCompletionChime();
+  armCompletionChime(prevMsg.content);
 
   const resolvedRegeneration = resolveInfographicFollowUp(baseMessages.slice(0, -1), prevMsg.content);
   if (isRasterPosterCreationRequest(resolvedRegeneration)) {
@@ -5530,7 +5468,7 @@ const handleRegenerate = async (index: number) => {
       });
       await preloadGeneratedImage(generated.url, 90_000, controller.signal);
       const thoughtTime = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
-      const content = `Here is the regenerated poster:\n\n![Generated poster for ${prevMsg.content} | model=${generated.modelUsed}](${generated.url})\n\n[META_JSON: ${JSON.stringify({ thoughtTime, model: generated.modelUsed })}]`;
+      const content = `${generated.notice ? `${generated.notice}\n\n` : ''}Here is the regenerated poster:\n\n![Generated poster for ${prevMsg.content} | model=${generated.modelUsed}](${generated.url})\n\n[META_JSON: ${JSON.stringify({ thoughtTime, model: generated.modelUsed })}]`;
       const completed: Message = {
         ...originalAssistant,
         role: "assistant",
@@ -5543,7 +5481,10 @@ const handleRegenerate = async (index: number) => {
         activeVersionIndex: originalVersions.length,
       };
       setMessages(replaceInConversation(completed));
-      announceGenerationComplete();
+      announceGenerationComplete({
+        prompt: prevMsg.content,
+        answer: content,
+      });
       if (!isIncognito && conversationId) {
         const query = originalAssistant.id
           ? supabase.from("messages").update({ content }).eq("id", originalAssistant.id).select()
@@ -5580,7 +5521,7 @@ const handleRegenerate = async (index: number) => {
     let currentPhase: ResponsePhase = "thinking";
     let currentEffortInfo: EffortInfo | undefined;
     let currentEffortRecovery: string | undefined;
-    let currentLogs: { action: string; query: string }[] = [];
+    let currentLogs: ProgressLog[] = [];
     let currentSources: string[] = [];
     let currentWebSearch: WebSearchData | undefined = undefined;
     let currentMedia: MediaPayload | undefined = undefined;
@@ -5634,6 +5575,7 @@ const handleRegenerate = async (index: number) => {
 
         attachments: regenerateAttachments,
         conversationId: agentSessionIdRef.current,
+        routingOverride: await deviceRoutingOverride(),
         userId: userId,
           userEmail: userEmail,
         isWebSearch: isWebSearch,
@@ -5642,7 +5584,7 @@ const handleRegenerate = async (index: number) => {
 
     if (!response.ok) {
       clearInterval(timerInterval);
-      throw new Error(`Server returned ${response.status}`);
+      throw await chatResponseError(response);
     }
 
     if (!response.body) throw new Error("No response body");
@@ -5662,13 +5604,14 @@ const handleRegenerate = async (index: number) => {
           if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
             try {
               const data = JSON.parse(line.slice(6));
+              workspaceStreamEvent(data);
               currentPhase = responsePhaseForEvent(data, currentPhase);
               if (data.type === "effort") currentEffortInfo = data;
               if (data.type === "effort_recovery") currentEffortRecovery = data.message;
               if (data.type === "status") {
                 currentLogs = [
                   ...currentLogs,
-                  { action: data.action, query: data.query },
+                  progressLogForEvent(data),
                 ];
               } else if (data.type === "searchIntent") {
                 currentSearchIntent = {
@@ -5683,7 +5626,7 @@ const handleRegenerate = async (index: number) => {
               } else if (data.type === "media") {
                 currentMedia = mergeMediaPayload(currentMedia, data);
               } else if (data.type === "media_status") {
-                currentLogs = [...currentLogs, { action: data.label || "Web image update", query: data.reason || "" }];
+                currentLogs = [...currentLogs, progressLogForEvent(data)];
               } else if (data.type === "text") {
                 streamingContent += data.content;
               } else if (data.type === "reset") {
@@ -5697,8 +5640,8 @@ const handleRegenerate = async (index: number) => {
               } else if (data.type === "agent_plan") {
                 currentLogs = [...currentLogs, { action: "Planning the work", query: "" }];
               } else if (data.type === "agent_status") {
-                const progress = visibleProgressLogs([{ action: data.label || "Reviewing the request" }]);
-                currentLogs = [...currentLogs, ...progress.map((log) => ({ action: log.action || "Reviewing the request", query: log.query || "" }))];
+                const progress = visibleProgressLogs([progressLogForEvent(data)]);
+                currentLogs = [...currentLogs, ...progress.map((log) => ({ ...log, action: log.action || "Reviewing your request", query: log.query || "" }))];
               } else if (data.type === "agent_result") {
                 currentLogs = [...currentLogs, agentResultLog(data)];
               }
@@ -5761,7 +5704,10 @@ const handleRegenerate = async (index: number) => {
       }
       return newM;
     });
-    announceGenerationComplete();
+    announceGenerationComplete({
+      prompt: prevMsg.content,
+      answer: streamingContent,
+    });
 
     if (!isIncognito && conversationId) {
       let finalDbContent = normalizeGeneratedBreakTags(streamingContent);
@@ -5868,38 +5814,12 @@ const topControlsJsx = (
 
 const markdownComponents = React.useMemo(
   () => ({
+    ...answerTypographyComponents,
     // Custom blocks own their <pre>; an outer pre would inherit nowrap and invalid nesting.
     pre: ({ children }: any) => <div className="markdown-block w-full min-w-0 max-w-full">{children}</div>,
-    p: ({ children }: any) => (
-      <span className="block mb-3 whitespace-normal leading-[1.65] text-gray-900 dark:text-gray-100 font-sans text-[15px] md:text-[16px] antialiased flow-root last:mb-0">
-        {children}
-      </span>
-    ),
-    li: ({ children }: any) => (
-      <li className="mb-1 whitespace-normal leading-[1.65] text-gray-800 dark:text-gray-200 font-sans text-[15px] md:text-[16px] antialiased flow-root last:mb-0">
-        {children}
-      </li>
-    ),
-    ul: ({ children }: any) => (
-      <ul className="ml-5 mb-4 list-disc space-y-0.5 text-gray-900 dark:text-gray-100 font-sans flow-root">
-        {children}
-      </ul>
-    ),
-    ol: ({ children }: any) => (
-      <ol className="ml-5 mb-4 list-decimal space-y-0.5 text-gray-900 dark:text-gray-100 font-sans flow-root">
-        {children}
-      </ol>
-    ),
-    strong: ({ children }: any) => (
-      <strong className="font-semibold text-gray-900 dark:text-white">
-        {children}
-      </strong>
-    ),
-    em: ({ children }: any) => (
-      <span className="text-gray-700 dark:text-gray-300">{children}</span>
-    ),
     a: ({ node, href, children, ...props }: any) => {
       if (!href) return <span>{children}</span>;
+      if (/^#void-file-[a-f0-9-]{36}$/i.test(href)) return <DeviceFileLink fileId={href.slice('#void-file-'.length)}>{children}</DeviceFileLink>;
 
       let finalHref = href;
       // If the link does not start with a standard protocol or path
@@ -5924,27 +5844,6 @@ const markdownComponents = React.useMemo(
 
       return <LinkRefPill href={finalHref}>{children}</LinkRefPill>;
     },
-    blockquote: ({ children }: any) => (
-      <blockquote className="border-l-3 border-gray-400 dark:border-gray-500 pl-4 my-4 text-gray-700 dark:text-gray-300 bg-gray-50/50 dark:bg-[#2A2A2A]/50 py-3 rounded-r-lg font-sans not-italic">
-        {children}
-      </blockquote>
-    ),
-    h1: ({ children }: any) => (
-      <h1 className="text-2xl font-bold mb-4 mt-6 text-gray-900 dark:text-white font-sans">
-        {children}
-      </h1>
-    ),
-    h2: ({ children }: any) => (
-      <h2 className="text-xl font-bold mb-3 mt-5 text-gray-900 dark:text-white font-sans">
-        {children}
-      </h2>
-    ),
-    h3: ({ children }: any) => (
-      <h3 className="text-lg font-semibold mb-2 mt-4 text-gray-900 dark:text-white font-sans">
-        {children}
-      </h3>
-    ),
-    hr: () => <hr className="my-6 border-gray-200 dark:border-[#3A3A3A]" />,
     table: ({ children }: any) => (
       <div className="my-5 overflow-x-auto rounded-xl border border-gray-200 dark:border-[#3A3A3A] shadow-sm">
         <table className="w-full text-sm text-left border-collapse font-sans text-gray-900 dark:text-gray-300">
@@ -6571,7 +6470,7 @@ return (
                           // with the `newMessagesWithEdit` array, similar to `handleRegenerate`.
                           
                           const sendEdited = async () => {
-                            armCompletionChime();
+                            armCompletionChime(editInputText);
                             setIsLoading(true);
                             abortControllerRef.current = new AbortController();
                             let startTime = Date.now();
@@ -6609,12 +6508,14 @@ return (
 
                                   attachments: getMessageAttachments(editedMsg),
                                   conversationId: agentSessionIdRef.current,
+                                  routingOverride: await deviceRoutingOverride(),
                                   userId: userId,
                                   userEmail: userEmail,
                                   isWebSearch: isWebSearch,
                                 }),
                               });
                               
+                              if (!response.ok) throw await chatResponseError(response);
                               if (!response.body) throw new Error("No response body");
                               const reader = response.body.getReader();
                               const decoder = new TextDecoder();
@@ -6624,7 +6525,7 @@ return (
                               let currentPhase: ResponsePhase = "thinking";
                               let currentEffortInfo: EffortInfo | undefined;
                               let currentEffortRecovery: string | undefined;
-                              let currentLogs: any[] = [];
+                              let currentLogs: ProgressLog[] = [];
                               let currentSources: string[] = [];
                               let currentWebSearch: any = undefined;
                               let currentMedia: MediaPayload | undefined = undefined;
@@ -6642,17 +6543,18 @@ return (
                                     if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
                                       try {
                                         const data = JSON.parse(line.slice(6));
+                                        workspaceStreamEvent(data);
                                         currentPhase = responsePhaseForEvent(data, currentPhase);
                                         if (data.type === "effort") currentEffortInfo = data;
                                         if (data.type === "effort_recovery") currentEffortRecovery = data.message;
-                                        if (data.type === "status") currentLogs = [...currentLogs, { action: data.action, query: data.query }];
+                                        if (data.type === "status") currentLogs = [...currentLogs, progressLogForEvent(data)];
                                         else if (data.type === "sources") currentSources = mergeSourceUrls(currentSources, data.sources);
                                         else if (data.type === "webSearch") {
                                           currentWebSearch = mergeWebSearchData(currentWebSearch, data);
                                           currentSources = mergeSourceUrls(currentSources, sourceUrlsFromWebSearch(data));
                                         }
                                         else if (data.type === "media") currentMedia = mergeMediaPayload(currentMedia, data);
-                                        else if (data.type === "media_status") currentLogs = [...currentLogs, { action: data.label || "Web image update", query: data.reason || "" }];
+                                        else if (data.type === "media_status") currentLogs = [...currentLogs, progressLogForEvent(data)];
                                         else if (data.type === "searchIntent") currentSearchIntent = { webSearchIntent: data.webSearchIntent, webImageIntent: data.webImageIntent };
                                         else if (data.type === "text") streamingContent += data.content;
                                         else if (data.type === "reset") streamingContent = "";
@@ -6663,8 +6565,8 @@ return (
                                        else if (data.type === "agent_plan") {
                                          currentLogs = [...currentLogs, { action: "Planning the work", query: "" }];
                                        } else if (data.type === "agent_status") {
-                                          const progress = visibleProgressLogs([{ action: data.label || "Reviewing the request" }]);
-                                          currentLogs = [...currentLogs, ...progress.map((log) => ({ action: log.action || "Reviewing the request", query: log.query || "" }))];
+                                          const progress = visibleProgressLogs([progressLogForEvent(data)]);
+                                          currentLogs = [...currentLogs, ...progress.map((log) => ({ ...log, action: log.action || "Reviewing your request", query: log.query || "" }))];
                                         } else if (data.type === "agent_result") currentLogs = [...currentLogs, agentResultLog(data)];
 
                                       } catch (e) {}
@@ -6712,7 +6614,10 @@ return (
                                 }
                                 return next;
                               });
-                              announceGenerationComplete();
+                              announceGenerationComplete({
+                                prompt: editInputText,
+                                answer: streamingContent,
+                              });
                             } catch (error: any) {
                               disarmCompletionChime();
                               console.error(error);
@@ -6865,6 +6770,7 @@ return (
                     <ImageGenerationLoader modelName={msg.modelName} />
                   ) : (
                     <AssistantMessageContent userEmail={userEmail}
+                      onTypingChange={onTypingChange}
                       msg={msg}
                       index={index}
                       previousUserContent={messages[index - 1]?.role === "user" ? messages[index - 1].content : ""}
@@ -6970,22 +6876,12 @@ return (
         <div className="shrink-0 p-4 bg-gradient-to-t from-gray-50 via-gray-50 dark:from-[#1E1E1E] dark:via-[#1E1E1E] to-transparent pt-10 relative z-20">
           <AnimatePresence>
             {userHasScrolledUp && (
-              <motion.button
-                initial={{ opacity: 0, scale: 0.8, x: "-50%", y: 8 }}
-                animate={{ opacity: 1, scale: 1, x: "-50%", y: 0 }}
-                exit={{ opacity: 0, scale: 0.8, x: "-50%", y: 8 }}
-                whileHover={{ scale: 1.06 }}
-                whileTap={{ scale: 0.94 }}
+              <ScrollToLatestButton loading={isLoading || messages.some(message => message.isStreaming) || Object.keys(revealingParts).length > 0}
                 onClick={() => {
                   setUserHasScrolledUp(false);
                   fluidScrollToBottom(true, { duration: 900, animateWave: true });
                 }}
-                className="absolute left-1/2 top-1 z-40 flex items-center justify-center rounded-full border border-gray-300 bg-white p-2.5 text-gray-800 shadow-xl transition-colors hover:bg-gray-100 dark:border-[#4A4A4A] dark:bg-[#27272A] dark:text-white dark:hover:bg-[#333]"
-                title="Scroll to latest message"
-                aria-label="Scroll to latest message"
-              >
-                <ChevronDown size={18} aria-hidden="true" />
-              </motion.button>
+              />
             )}
           </AnimatePresence>
           <div className="max-w-4xl xl:max-w-5xl mx-auto relative shadow-xl rounded-2xl">

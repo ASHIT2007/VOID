@@ -46,7 +46,6 @@
   ],
   "exclude": [
     "node_modules",
-    "admin-dashboard",
     ".next",
     ".next.corrupt-*"
   ]

@@ -5,13 +5,14 @@ import type {
   ChatToolDefinition,
   ChatToolChoice,
   Platform,
-} from '@freellmapi/shared/types.js';
+} from '@void/shared/types.js';
 
 export interface CompletionOptions {
   signal?: AbortSignal;
   model?: string;
   temperature?: number;
   max_tokens?: number;
+  reasoning_effort?: 'low' | 'medium' | 'high';
   top_p?: number;
   tools?: ChatToolDefinition[];
   tool_choice?: ChatToolChoice;

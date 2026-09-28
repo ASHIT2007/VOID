@@ -3,8 +3,10 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
   Platform,
-} from '@freellmapi/shared/types.js';
+} from '@void/shared/types.js';
 import { BaseProvider, type CompletionOptions } from './base.js';
+import { safeProviderRequest } from '../lib/safe-provider-request.js';
+import { createHash } from 'node:crypto';
 
 /**
  * Generic provider for platforms that use an OpenAI-compatible API.
@@ -20,6 +22,43 @@ export class OpenAICompatProvider extends BaseProvider {
   /** Per-provider HTTP timeout override. Cloud APIs finish in ~15s; locally-hosted
    * inference (llama.cpp / vLLM on CPU) can take 30-120s for long prompts. Default 15000. */
   private readonly timeoutMs: number;
+  private readonly publicOnly: boolean;
+  private readonly tokenBudgets = new Map<string, { remaining: number; expires: number }>();
+
+  private quotaKey(apiKey: string, modelId: string): string {
+    return createHash('sha256').update(`${apiKey}\0${modelId}`).digest('hex');
+  }
+
+  // Groq reports its account's actual TPM headroom on every response. BYOK
+  // routes lack a local quota catalog; do not reserve a full completion again
+  // after spending tokens on research. Credentials are never stored here.
+  private observeQuota(response: Response, apiKey: string, modelId: string) {
+    if (this.platform !== 'groq' || !response.headers?.get) return;
+    const raw = response.headers.get('x-ratelimit-remaining-tokens');
+    const remaining = raw === null ? NaN : Number(raw);
+    if (!Number.isFinite(remaining) || remaining < 0) return;
+    const reset = response.headers.get('x-ratelimit-reset-tokens') || '';
+    let resetMs = 0;
+    for (const match of reset.matchAll(/([\d.]+)(ms|s|m|h)/g)) resetMs += Number(match[1]) * ({ ms: 1, s: 1000, m: 60000, h: 3600000 }[match[2]] || 0);
+    if (this.tokenBudgets.size >= 512) this.tokenBudgets.delete(this.tokenBudgets.keys().next().value!);
+    this.tokenBudgets.set(this.quotaKey(apiKey, modelId), { remaining, expires: Date.now() + Math.min(60000, resetMs || 60000) });
+  }
+
+  private outputBudget(apiKey: string, messages: ChatMessage[], modelId: string, options?: CompletionOptions) {
+    const budget = this.tokenBudgets.get(this.quotaKey(apiKey, modelId));
+    if (!budget || budget.expires <= Date.now() || !options?.max_tokens) return options?.max_tokens;
+    const input = Math.ceil((JSON.stringify(messages).length + JSON.stringify(options.tools || []).length) / 3) + 128;
+    return Math.min(options.max_tokens, Math.max(128, budget.remaining - input));
+  }
+
+  private async apiError(response: Response): Promise<Error> {
+    let limit = '';
+    try {
+      const payload = await response.json() as { error?: { message?: string } };
+      limit = typeof payload.error?.message === 'string' ? payload.error.message.match(/(?:tokens|requests) per (?:day|minute)/i)?.[0] || '' : '';
+    } catch { /* Do not expose upstream response bodies or account identifiers. */ }
+    return Object.assign(new Error(`${this.name} API error ${response.status}${limit ? ` (${limit})` : ''}`), { status: response.status });
+  }
 
   constructor(opts: {
     platform: Platform;
@@ -29,6 +68,7 @@ export class OpenAICompatProvider extends BaseProvider {
     validateUrl?: string;
     timeoutMs?: number;
     keyless?: boolean;
+    publicOnly?: boolean;
   }) {
     super();
     this.platform = opts.platform;
@@ -38,6 +78,11 @@ export class OpenAICompatProvider extends BaseProvider {
     this.validateUrl = opts.validateUrl;
     this.timeoutMs = opts.timeoutMs ?? 600000;
     this.keyless = opts.keyless ?? false;
+    this.publicOnly = opts.publicOnly ?? false;
+  }
+
+  protected override fetchWithTimeout(url: string, init: RequestInit, timeoutMs = this.timeoutMs): Promise<Response> {
+    return this.publicOnly ? safeProviderRequest(url, init, timeoutMs) : super.fetchWithTimeout(url, init, timeoutMs);
   }
 
   /** Keyless providers (Kilo's anonymous free tier) must send NO Authorization
@@ -53,7 +98,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    let res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       signal: options?.signal,
       headers: {
@@ -64,18 +109,29 @@ export class OpenAICompatProvider extends BaseProvider {
       body: JSON.stringify({
         model: modelId,
         messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
+        temperature: this.platform === 'openai' && /^(?:o[134]|gpt-5)/i.test(modelId) ? undefined : options?.temperature,
+        max_tokens: this.outputBudget(apiKey, messages, modelId, options),
+        reasoning_effort: this.platform === 'groq' && /^openai\/gpt-oss-(?:20|120)b$/.test(modelId) ? options?.reasoning_effort : undefined,
+        top_p: this.platform === 'custom' ? undefined : options?.top_p,
         tools: options?.tools,
         tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
+        parallel_tool_calls: this.platform === 'custom' ? undefined : options?.parallel_tool_calls,
       }),
     }, this.timeoutMs);
 
+    if (res.status === 400 && this.platform === 'custom') {
+      await res.body?.cancel();
+      res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+        method: 'POST', signal: options?.signal,
+        headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
+        body: JSON.stringify({ model: modelId, messages, max_completion_tokens: options?.max_tokens,
+          tools: options?.tools, tool_choice: options?.tool_choice }),
+      }, this.timeoutMs);
+    }
+
+    this.observeQuota(res, apiKey, modelId);
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(`${this.name} API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
+      throw await this.apiError(res);
     }
 
     let data: ChatCompletionResponse;
@@ -102,7 +158,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    let res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       signal: options?.signal,
       headers: {
@@ -113,19 +169,32 @@ export class OpenAICompatProvider extends BaseProvider {
       body: JSON.stringify({
         model: modelId,
         messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
+        temperature: this.platform === 'openai' && /^(?:o[134]|gpt-5)/i.test(modelId) ? undefined : options?.temperature,
+        max_tokens: this.outputBudget(apiKey, messages, modelId, options),
+        reasoning_effort: this.platform === 'groq' && /^openai\/gpt-oss-(?:20|120)b$/.test(modelId) ? options?.reasoning_effort : undefined,
+        top_p: this.platform === 'custom' ? undefined : options?.top_p,
         tools: options?.tools,
         tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
+        parallel_tool_calls: this.platform === 'custom' ? undefined : options?.parallel_tool_calls,
         stream: true,
+        // Avoid sending optional extensions to unknown/custom endpoints.
+        stream_options: this.platform === 'openai' || this.platform === 'groq' ? { include_usage: true } : undefined,
       }),
     }, this.timeoutMs);
 
+    if (res.status === 400 && this.platform === 'custom') {
+      await res.body?.cancel();
+      res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+        method: 'POST', signal: options?.signal,
+        headers: { ...this.authHeader(apiKey), 'Content-Type': 'application/json', ...this.extraHeaders },
+        body: JSON.stringify({ model: modelId, messages, stream: true, max_completion_tokens: options?.max_tokens,
+          tools: options?.tools, tool_choice: options?.tool_choice }),
+      }, this.timeoutMs);
+    }
+
+    this.observeQuota(res, apiKey, modelId);
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(`${this.name} API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
+      throw await this.apiError(res);
     }
 
     const reader = res.body?.getReader();

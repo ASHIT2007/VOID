@@ -1,3 +1,4 @@
+import { requireDeploymentAccess } from '@/lib/deployment-access';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -6,6 +7,8 @@ const runtimeRequire = createRequire(path.join(process.cwd(), 'package.json'));
 const threeRoot = path.resolve(path.dirname(runtimeRequire.resolve('three')), '..');
 
 export async function GET(_request: Request, context: { params: Promise<{ path: string[] }> }) {
+  const denied = requireDeploymentAccess(_request);
+  if (denied) return denied;
   const { path: segments } = await context.params;
   const file = segments.join('/');
   if (segments.some(segment => !/^[\w.-]+$/.test(segment) || segment === '..')

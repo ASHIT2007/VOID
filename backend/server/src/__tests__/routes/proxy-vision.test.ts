@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { Express } from 'express';
-import { createApp } from '../../app.js';
+import { createApp } from '../helpers/legacy-app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
 
 async function post(app: Express, path: string, body: any, key: string) {

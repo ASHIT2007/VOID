@@ -9,7 +9,7 @@ vi.mock('../../services/router.js', async (importOriginal) => {
 });
 
 import type { Express } from 'express';
-import { createApp } from '../../app.js';
+import { createApp } from '../helpers/legacy-app.js';
 import { initDb, getUnifiedApiKey } from '../../db/index.js';
 
 function fakeRoute(provider: any) {

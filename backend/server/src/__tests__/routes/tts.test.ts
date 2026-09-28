@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Express } from 'express';
-import { createApp } from '../../app.js';
+import { createApp } from '../helpers/legacy-app.js';
 import { initDb } from '../../db/index.js';
 import { inferLanguageCode } from '../../routes/tts.js';
 
@@ -28,16 +28,16 @@ describe('POST /api/tts', () => {
     app = createApp();
   });
 
-  it('rejects requests without text', async () => {
+  it('retires the managed endpoint even without text', async () => {
     const { status, body } = await post(app, {});
-    expect(status).toBe(400);
-    expect(body.error.message).toContain('Missing "text"');
+    expect(status).toBe(410);
+    expect(body.error).toContain('BYOK');
   });
 
-  it('reports missing TTS provider configuration', async () => {
+  it('never runs the old managed voice pipeline', async () => {
     const { status, body } = await post(app, { text: 'hello' });
-    expect(status).toBe(500);
-    expect(body.error.message).toContain('No TTS provider configured');
+    expect(status).toBe(410);
+    expect(body.error).toContain('BYOK');
   });
 });
 

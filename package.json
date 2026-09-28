@@ -8,29 +8,46 @@
   },
   "workspaces": [
     "frontend",
-    "frontend/admin-dashboard",
     "backend/server",
-    "shared",
-    "freellmapi/desktop"
+    "shared"
   ],
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail --names app,admin \"npm run dev --prefix frontend --workspaces=false\" \"npm run dev -w @freellmapi/client\"",
-    "build": "npm run build --prefix frontend --workspaces=false && npm run build -w @freellmapi/server && npm run build -w @freellmapi/client",
+    "dev": "node scripts/app-supervisor.mjs",
+    "build": "npm run build --prefix frontend --workspaces=false && npm run build --prefix backend/server",
     "start": "npm run start --prefix frontend --workspaces=false",
     "start:frontend": "npm run start:next --prefix frontend --workspaces=false",
-    "start:backend": "npm run start --workspace=@freellmapi/server",
-    "test": "npm run test --workspace=@freellmapi/server",
+    "start:backend": "npm run start --prefix backend/server",
+    "test": "npm run test --prefix backend/server",
+    "test:frontend": "vitest run --config frontend/vitest.config.mts",
     "check:repository": "node scripts/check-repository.mjs",
-    "install:all": "npm install"
+    "install:all": "npm install",
+    "test:database": "node scripts/test-database.mjs",
+    "test:production": "node scripts/smoke-production.mjs"
   },
   "overrides": {
     "@types/three": "0.182.0",
-    "three": "0.182.0"
+    "three": "0.182.0",
+    "image-size": "2.0.4",
+    "minimatch@10.2.6": {
+      "brace-expansion": "^5.0.9"
+    },
+    "minimatch@3.1.5": {
+      "brace-expansion": "^1.1.21"
+    },
+    "pptxgenjs": {
+      "image-size": "2.0.4"
+    },
+    "uuid": "$uuid"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.4.0",
     "@types/three": "0.182.0",
-    "concurrently": "^9.1.2",
+    "brace-expansion": "^1.1.21",
+    "exceljs": "^4.4.0",
+    "image-size": "2.0.4",
+    "pptxgenjs": "^4.0.1",
     "three": "0.182.0",
+    "uuid": "11.1.1",
     "wrangler": "^4.129.0"
   }
 }

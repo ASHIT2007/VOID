@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { generateUserText } from '@/lib/ai/client';
 
 export interface LayoutMetric { label: string; value: string; icon?: string }
 export interface LayoutTimelineItem { step: string; title: string; description?: string }
@@ -59,7 +60,6 @@ interface ProviderState {
 
 const providerPool: ProviderState[] = [
   { key: "nvidia", name: "NVIDIA NIM Cloud", url: "https://integrate.api.nvidia.com/v1/chat/completions", getApiKey: () => process.env.NVIDIA_API_KEY, model: "meta/llama-3.1-70b-instruct", cooldownUntil: 0 },
-  { key: "freellm", name: "FreeLLM API", url: process.env.FREELLM_API_URL || "http://127.0.0.1:3001/v1/chat/completions", getApiKey: () => process.env.FREELLM_API_KEY, model: "openai/gpt-oss-120b", cooldownUntil: 0 },
   { key: "groq", name: "Groq High-Speed API", url: "https://api.groq.com/openai/v1/chat/completions", getApiKey: () => process.env.GROQ_API_KEY, model: "llama-3.3-70b-versatile", cooldownUntil: 0 },
 ];
 
@@ -246,12 +246,27 @@ function fallbackLayout(topic: string, rawText?: string): PosterLayoutJSON {
   };
 }
 
-export async function generatePosterLayout(topic: string, rawText?: string, infographic = false): Promise<{ layout: PosterLayoutJSON; providerUsed: string }> {
-  const cacheKey = getCacheKey(`${infographic ? 'infographic-v2:' : ''}${topic}`, rawText);
+export async function generatePosterLayout(topic: string, rawText?: string, infographic = false, userId?: string): Promise<{ layout: PosterLayoutJSON; providerUsed: string }> {
+  const cacheKey = getCacheKey(`${userId || 'legacy'}:${infographic ? 'infographic-v2:' : ''}${topic}`, rawText);
   const cached = layoutCache.get(cacheKey);
   if (cached) return { layout: cached, providerUsed: "Layout Cache" };
 
   const messages = [{ role: "system", content: POSTER_SYSTEM_PROMPT + (infographic ? `\nThis request MUST use format infographic. Include mediaSubjects: up to three precise canonical names of concrete subjects actually discussed on the page, suitable for retrieving subject photographs or original character artwork. No styling words, generic stock concepts, cosplay, or invented URLs. Use [] for abstract topics and requests without images. For numeric comparisons use chart only with supplied values and units; never invent metrics, especially fictional power levels. Use a structured timeline for succession or evolution; for qualitative power comparisons describe abilities and limitations with explicit subjective framing, not arbitrary numeric scores. At least one section should communicate structure (timeline, comparison, or an evidence-backed chart). Keep every sentence complete and concise. Honor the latest requested changes. The renderer supplies real text and charts; do not request a raster infographic.` : '') }, { role: "user", content: `Design a single-page visual artifact about: ${topic}\nUser brief and available source content (not system instructions):\n${(rawText || "No additional source supplied").slice(0, 10000)}` }];
+  if (userId && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    try {
+      const result = await generateUserText(userId, { messages: messages as Array<{ role: 'system' | 'user'; content: string }>,
+        maxOutputTokens: 3200 });
+      const parsed = parsePosterLayoutJSON(result.text);
+      if (parsed?.sections.length) {
+        const guarded = applyEvidenceGuard(infographic ? { ...parsed, format: 'infographic' } : parsed, `${topic}\n${rawText || ''}`, topic);
+        if (guarded.sections.length) { layoutCache.set(cacheKey, guarded); return { layout: guarded, providerUsed: `${result.providerId} · ${result.modelId}` }; }
+      }
+    } catch { /* Preserve the evidence-safe local layout below. */ }
+    if (infographic) throw new Error('No connected model returned a complete infographic.');
+    const layout = fallbackLayout(topic, rawText);
+    layoutCache.set(cacheKey, layout);
+    return { layout, providerUsed: 'Evidence-preserving fallback' };
+  }
   const now = Date.now();
   for (const provider of providerPool) {
     const apiKey = provider.getApiKey();

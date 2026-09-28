@@ -1,13 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../agent/agent-loop.js';
-const mocks = vi.hoisted(() => ({ adaptive: vi.fn(), loop: vi.fn() }));
+const mocks = vi.hoisted(() => ({ adaptive: vi.fn(), loop: vi.fn(), media: vi.fn() }));
 vi.mock('../../agent/agent-loop.js', () => ({ runAgentLoop: mocks.loop }));
 vi.mock('../../agent/multi-agent-orchestrator.js', () => ({ runAdaptiveOrchestration: mocks.adaptive }));
-vi.mock('../../agent/media-orchestrator.js', () => ({ classifyMediaIntent: () => ({ considered: true }) }));
+vi.mock('../../agent/media-orchestrator.js', () => ({ runMediaWorker: mocks.media }));
 import { buildEmergencyEvidenceAnswer, runEffortTurn } from '../../agent/effort-turn.js';
 
 describe('answer recovery ownership', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mocks.media.mockResolvedValue([]); });
+  it('grounds images in a recovered answer before emitting done', async () => {
+    mocks.adaptive.mockImplementation(async options => options.onEvent({ type: 'error', message: '429' }));
+    mocks.loop.mockImplementation(async options => options.onEvent({ type: 'done', fullText: 'A leopard is a large spotted cat.' }));
+    mocks.media.mockImplementation(async (options, emit) => {
+      expect(options.responseText).toBe('A leopard is a large spotted cat.');
+      emit({ type: 'media', query: 'Leopard', placement: 'inline', images: [{ url: 'https://example.com/leopard.jpg', verified: true }] });
+      return [];
+    });
+    const events: AgentEvent[] = [];
+    await runEffortTurn({ message: 'give image of an lepord and tell me about it', mode: 'normal', onEvent: event => events.push(event) });
+    expect(events.findIndex(event => event.type === 'media')).toBeGreaterThan(events.findIndex(event => event.type === 'text_delta'));
+    expect(events.at(-1)?.type).toBe('done');
+  });
   it('keeps voice reasoning adaptive without imposing written-answer length or disabling research', async () => {
     mocks.adaptive.mockImplementation(async (options) => {
       expect(options.reasoningEffort).not.toBe('auto');
@@ -42,6 +55,20 @@ describe('answer recovery ownership', () => {
     });
     expect(events.find((event) => event.type === 'effort')).toMatchObject({ searchMode: 'off', agentCount: 1 });
     expect(mocks.adaptive).toHaveBeenCalledTimes(1);
+  });
+  it('keeps actual file tools available when generating from an attachment', async () => {
+    mocks.adaptive.mockImplementation(async options => {
+      expect(options.allowedTools).toEqual(['generate_pdf']); expect(options.searchMode).toBe('off');
+      options.onEvent({ type: 'done', fullText: 'Created the requested PDF.' });
+    });
+    await runEffortTurn({ message: 'Create a PDF report from the attached file', mode: 'normal', attachments: [{ name: 'notes.txt', type: 'text/plain', extractedText: 'Provided source notes.' }], onEvent: () => {} });
+    expect(mocks.loop).not.toHaveBeenCalled();
+  });
+  it('reports file-generation failures instead of falling into text-only or image recovery', async () => {
+    mocks.adaptive.mockImplementation(async options => options.onEvent({ type: 'error', message: 'The PDF generator failed.' }));
+    const events: AgentEvent[] = [];
+    await runEffortTurn({ message: 'Create a PDF report on solar energy', mode: 'normal', onEvent: event => events.push(event) });
+    expect(mocks.loop).not.toHaveBeenCalled(); expect(events.at(-1)).toEqual({ type: 'error', message: 'The PDF generator failed.' });
   });
   it('retains a finished answer when optional media fails afterward', async () => {
     mocks.adaptive.mockImplementation(async (options) => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { Express } from 'express';
-import { createApp } from '../../app.js';
+import { createApp } from '../helpers/legacy-app.js';
 import { initDb, getUnifiedApiKey } from '../../db/index.js';
 
 async function request(app: Express, method: string, path: string, body?: any, headers: Record<string, string> = {}) {
@@ -73,12 +73,12 @@ describe('Proxy authentication and CORS', () => {
     expect(headers.get('access-control-allow-origin')).toBeNull();
   });
 
-  it('allows the local dashboard origin through CORS', async () => {
+  it('allows the local VOID frontend origin through CORS', async () => {
     const { status, headers } = await request(app, 'GET', '/api/ping', undefined, {
-      Origin: 'http://localhost:5173',
+      Origin: 'http://localhost:3000',
     });
 
     expect(status).toBe(200);
-    expect(headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+    expect(headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
   });
 });

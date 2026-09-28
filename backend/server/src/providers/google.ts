@@ -6,7 +6,7 @@ import type {
   ChatToolChoice,
   ChatToolDefinition,
   TokenUsage,
-} from '@freellmapi/shared/types.js';
+} from '@void/shared/types.js';
 import { BaseProvider, type CompletionOptions } from './base.js';
 import { contentToString } from '../lib/content.js';
 
@@ -353,7 +353,7 @@ export class GoogleProvider extends BaseProvider {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(`Google API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
+      throw new Error(`Google API error ${res.status}`);
     }
 
     const data = await res.json() as GeminiResponse;
@@ -417,7 +417,7 @@ export class GoogleProvider extends BaseProvider {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(`Google API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
+      throw new Error(`Google API error ${res.status}`);
     }
 
     const reader = res.body?.getReader();
@@ -471,6 +471,10 @@ export class GoogleProvider extends BaseProvider {
           continue;
         }
         const candidate = chunk.candidates?.[0];
+        if (chunk.usageMetadata && Number.isFinite(chunk.usageMetadata.promptTokenCount) && Number.isFinite(chunk.usageMetadata.candidatesTokenCount)) {
+          yield { id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: modelId, choices: [],
+            usage: { prompt_tokens: chunk.usageMetadata.promptTokenCount!, completion_tokens: chunk.usageMetadata.candidatesTokenCount!, total_tokens: chunk.usageMetadata.totalTokenCount ?? chunk.usageMetadata.promptTokenCount! + chunk.usageMetadata.candidatesTokenCount! } };
+        }
         const parts = candidate?.content?.parts ?? [];
 
         const text = extractText(parts);

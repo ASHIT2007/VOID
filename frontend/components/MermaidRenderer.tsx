@@ -1,200 +1,78 @@
-"use client";
+'use client';
+import React, { useEffect, useId, useState } from 'react';
+import { Download, ZoomIn, ZoomOut, RotateCcw, ChevronDown } from 'lucide-react';
+import { normalizeMermaid } from '@void/shared/diagram-contract.mjs';
+import { mermaidConfig } from '@/lib/mermaid-theme';
 
-import React, { useEffect, useRef, useState } from "react";
-import { Copy, Check, Download, ZoomIn, ZoomOut, RotateCcw, AlertCircle, FileText } from "lucide-react";
-
-interface MermaidRendererProps {
-  chart?: string;
-  theme?: "dark" | "light";
-}
-
-let mermaidIdCounter = 0;
-
-export default function MermaidRenderer({ chart, theme = "dark" }: MermaidRendererProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [svgContent, setSvgContent] = useState<string>("");
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+// Mermaid owns global configuration; serialize initialization/rendering across messages.
+let renderQueue: Promise<unknown> = Promise.resolve();
+export default function MermaidRenderer({ chart, theme = 'dark' }: { chart?: string; theme?: 'dark' | 'light' }) {
+  const id = `void-diagram-${useId().replace(/[^a-z0-9]/gi, '')}`;
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState('');
   const [zoom, setZoom] = useState(1);
-  const [uniqueId] = useState(() => `mermaid-svg-${++mermaidIdCounter}-${Math.random().toString(36).substring(2, 7)}`);
-
-  // Guard against undefined, null, or empty string
-  const cleanChartRaw = typeof chart === "string" ? chart.trim() : "";
-  const isValidChartInput = Boolean(cleanChartRaw && cleanChartRaw !== "undefined");
-
+  const [retry, setRetry] = useState(0);
+  const [naturalWidth, setNaturalWidth] = useState(800);
+  const code = normalizeMermaid(chart);
   useEffect(() => {
-    let isMounted = true;
-
-    if (!isValidChartInput) {
-      setSvgContent("");
-      setError(null);
-      return;
-    }
-
-    async function renderDiagram() {
+    let cancelled = false;
+    setSvg(''); setError(''); setZoom(1);
+    if (!code) { setError('This diagram is incomplete or contains unsupported actions. Ask VOID to regenerate it with valid Mermaid syntax.'); return; }
+    renderQueue = renderQueue.catch(() => {}).then(async () => {
+      if (cancelled) return;
       try {
-        setError(null);
-        const mermaid = (await import("mermaid")).default;
-
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: theme === "dark" ? "dark" : "default",
-          securityLevel: "loose",
-          fontFamily: "Plus Jakarta Sans, system-ui, sans-serif",
-          themeVariables: {
-            darkMode: theme === "dark",
-            background: theme === "dark" ? "#090d16" : "#ffffff",
-            primaryColor: "#3b82f6",
-            primaryTextColor: "#ffffff",
-            primaryBorderColor: "#2563eb",
-            lineColor: "#64748b",
-            secondaryColor: "#10b981",
-            tertiaryColor: "#f59e0b",
-          },
-          mindmap: {
-            padding: 20,
-            useMaxWidth: true,
-          },
-          flowchart: {
-            curve: "basis",
-            useMaxWidth: true,
-            htmlLabels: true,
-          },
-          xyChart: {
-            width: 700,
-            height: 400,
-          }
+        const mermaid = (await import('mermaid')).default;
+        mermaid.initialize(mermaidConfig(theme));
+        const result = await mermaid.render(id, code);
+        // Mermaid may include XHTML labels for some diagram types. Parse as HTML
+        // to normalize void tags before exporting a well-formed SVG document.
+        const document = new DOMParser().parseFromString(result.svg, 'text/html');
+        const root = document.querySelector('svg');
+        if (!root) throw new Error('Missing diagram SVG');
+        const width = Number(root.getAttribute('viewBox')?.trim().split(/\s+/)[2]);
+        root.style.maxWidth = 'none';
+        // Keep spaces between Mermaid's word-level tspans in standalone viewers.
+        root.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
+        root.setAttribute('font-family', 'Arial, Helvetica, sans-serif');
+        root.querySelectorAll('text').forEach(text => { text.style.whiteSpace = 'pre'; });
+        // Mermaid centers circle label groups at x=0, but SVG text defaults to
+        // start alignment when HTML labels are disabled. Center those labels.
+        root.querySelectorAll('.mindmap-node > circle').forEach(circle => {
+          circle.parentElement?.querySelectorAll('text').forEach(text => text.setAttribute('text-anchor', 'middle'));
         });
-
-        // Clean up markdown ticks if present
-        let cleanChart = cleanChartRaw;
-        if (cleanChart.startsWith("```mermaid")) {
-          cleanChart = cleanChart.replace(/^```mermaid\n?/, "").replace(/```$/, "");
-        } else if (cleanChart.startsWith("```")) {
-          cleanChart = cleanChart.replace(/^```\n?/, "").replace(/```$/, "");
+        root.setAttribute('role', 'img');
+        if (!root.hasAttribute('aria-labelledby')) root.setAttribute('aria-label', code.startsWith('mindmap') ? 'Mind map' : 'Mermaid diagram');
+        if (!cancelled) {
+          setNaturalWidth(Number.isFinite(width) && width > 0 ? width : 800);
+          setSvg(new XMLSerializer().serializeToString(root));
         }
-        cleanChart = cleanChart.trim();
-
-        if (!cleanChart || cleanChart === "undefined") {
-          return;
-        }
-
-        const { svg } = await mermaid.render(uniqueId, cleanChart);
-        if (isMounted) {
-          setSvgContent(svg);
-        }
-      } catch (err: any) {
-        console.error("Mermaid rendering error:", err);
-        if (isMounted) {
-          setError(err?.message || "Failed to render diagram syntax.");
-        }
+      } catch {
+        if (!cancelled) setError('VOID could not render this diagram. Its Mermaid syntax may be invalid. Ask for a corrected diagram, or view the source below.');
       }
-    }
-
-    renderDiagram();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [cleanChartRaw, isValidChartInput, theme, uniqueId]);
-
-  if (!isValidChartInput) {
-    return null;
-  }
-
-  const handleCopyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(cleanChartRaw);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      console.error("Copy failed", e);
-    }
+    });
+    return () => { cancelled = true; };
+  }, [code, theme, id, retry]);
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'void-diagram.svg';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
-
-  const handleDownloadSvg = () => {
-    if (!svgContent) return;
-    const blob = new Blob([svgContent], { type: "image/svg+xml" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `diagram-${Date.now()}.svg`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div className="w-full my-5 rounded-2xl border border-gray-200 dark:border-[#2f384a] bg-gray-50 dark:bg-[#0f172a] overflow-hidden shadow-lg transition-all">
-      {/* Paper/Report Style Header Bar */}
-      <div className="flex items-center justify-between px-5 py-3 bg-gray-100/80 dark:bg-[#1e293b]/80 backdrop-blur-sm border-b border-gray-200 dark:border-[#2f384a] text-xs font-semibold text-gray-700 dark:text-gray-200">
-        <div className="flex items-center gap-2.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
-          <span className="tracking-wide uppercase text-[11px] font-bold text-blue-600 dark:text-blue-400">Visual Mind Map / Analysis Diagram</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setZoom((z) => Math.min(z + 0.2, 2.5))}
-            className="p-1.5 hover:bg-gray-200 dark:hover:bg-[#334155] rounded-md transition-colors text-gray-600 dark:text-gray-300"
-            title="Zoom In"
-          >
-            <ZoomIn size={14} />
-          </button>
-          <button
-            onClick={() => setZoom((z) => Math.max(z - 0.2, 0.5))}
-            className="p-1.5 hover:bg-gray-200 dark:hover:bg-[#334155] rounded-md transition-colors text-gray-600 dark:text-gray-300"
-            title="Zoom Out"
-          >
-            <ZoomOut size={14} />
-          </button>
-          <button
-            onClick={() => setZoom(1)}
-            className="p-1.5 hover:bg-gray-200 dark:hover:bg-[#334155] rounded-md transition-colors text-gray-600 dark:text-gray-300"
-            title="Reset Zoom"
-          >
-            <RotateCcw size={14} />
-          </button>
-          <div className="w-px h-3.5 bg-gray-300 dark:bg-gray-700 mx-1" />
-          <button
-            onClick={handleDownloadSvg}
-            className="flex items-center gap-1 px-2.5 py-1 hover:bg-gray-200 dark:hover:bg-[#334155] rounded-md transition-colors text-gray-600 dark:text-gray-300"
-            title="Export SVG"
-          >
-            <Download size={13} />
-            <span>SVG</span>
-          </button>
-          <button
-            onClick={handleCopyCode}
-            className="flex items-center gap-1 px-2.5 py-1 hover:bg-gray-200 dark:hover:bg-[#334155] rounded-md transition-colors text-gray-600 dark:text-gray-300"
-            title="Copy Code"
-          >
-            {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
-            <span>{copied ? "Copied" : "Code"}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* SVG Canvas Body */}
-      <div className="p-6 md:p-8 overflow-auto flex items-center justify-center min-h-[250px] max-h-[650px] bg-white dark:bg-[#0b0f19] relative">
-        {error ? (
-          <div className="flex flex-col items-center text-center p-6 text-amber-600 dark:text-amber-400 gap-2 text-sm">
-            <AlertCircle size={22} />
-            <span className="font-semibold">Diagram Rendering Warning</span>
-            <span className="text-xs text-gray-500">{error}</span>
-            <pre className="mt-3 text-xs font-mono text-gray-400 max-w-full overflow-x-auto p-3 bg-black/20 rounded-lg text-left">
-              {cleanChartRaw}
-            </pre>
-          </div>
-        ) : (
-          <div
-            ref={containerRef}
-            className="transition-transform duration-200 ease-out origin-center max-w-full"
-            style={{ transform: `scale(${zoom})` }}
-            dangerouslySetInnerHTML={{ __html: svgContent }}
-          />
-        )}
+  return <section aria-label="Diagram preview" className="my-6 w-full min-w-0 bg-transparent text-neutral-600 dark:text-neutral-300">
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+      <strong>{code?.startsWith('mindmap') ? 'Mind map' : 'Diagram'}</strong>
+      <div className="flex items-center gap-1">
+        <button aria-label="Zoom out diagram" className="rounded-lg p-2 transition hover:bg-black/5 active:scale-95 dark:hover:bg-white/10" onClick={() => setZoom(value => Math.max(.5, value - .2))}><ZoomOut size={14} /></button>
+        <button aria-label="Zoom in diagram" className="rounded-lg p-2 transition hover:bg-black/5 active:scale-95 dark:hover:bg-white/10" onClick={() => setZoom(value => Math.min(3, value + .2))}><ZoomIn size={14} /></button>
+        <button aria-label="Reset diagram zoom" className="rounded-lg p-2 transition hover:bg-black/5 active:scale-95 dark:hover:bg-white/10" onClick={() => setZoom(1)}><RotateCcw size={14} /></button>
+        <button disabled={!svg} aria-label="Download diagram as SVG" className="rounded-lg p-2 transition hover:bg-black/5 active:scale-95 disabled:opacity-40 dark:hover:bg-white/10" onClick={download}><Download size={14} /></button>
       </div>
     </div>
-  );
+    <div className="min-h-32 overflow-x-auto py-2">
+      {error ? <div role="alert" className="space-y-3 text-sm text-neutral-600 dark:text-neutral-300"><p>{error}</p><button className="rounded border border-neutral-500 px-3 py-1.5" onClick={() => setRetry(value => value + 1)}>Retry rendering</button></div>
+        : svg ? <div className="void-mermaid mx-auto transition-[width] duration-150 motion-reduce:transition-none [&_svg]:block [&_svg]:h-auto [&_svg]:w-full" style={{ width: `min(${zoom * 100}%, ${naturalWidth * zoom}px)` }} dangerouslySetInnerHTML={{ __html: svg }} />
+          : <p role="status" className="text-sm text-neutral-400">Rendering diagram…</p>}
+    </div>
+    <details className="mt-2 py-2 text-xs text-neutral-500"><summary className="flex cursor-pointer items-center gap-2 transition hover:text-neutral-900 dark:hover:text-neutral-200"><ChevronDown size={12} />Diagram source</summary><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap">{chart}</pre></details>
+  </section>;
 }

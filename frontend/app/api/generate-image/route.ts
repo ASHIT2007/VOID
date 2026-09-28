@@ -1,12 +1,19 @@
+import { requireDeploymentAccess } from '@/lib/deployment-access';
+import { safePublicFetch } from '@void/shared/safe-fetch.mjs';
 import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import sharp from 'sharp';
 import { fetchWithRetry } from '@/lib/reliability';
 import { readGeneratedImage, storeGeneratedImage } from '@/lib/generated-image-store';
 import { imageProviderOrder, imageGenerationProviderOrder, POSTER_CLOUDFLARE_MODEL, POSTER_FLUX_MODEL, type ImageProviderId } from '@/lib/image-model-routing';
-import { buildAiPosterPrompt, isAiPosterRequest } from '@/lib/poster-generation';
+import { buildAiPosterPrompt, buildCloudflarePosterPrompt, isAiPosterRequest } from '@/lib/poster-generation';
+import { composeCloudflarePoster } from '@/lib/poster/cloudflare-compositor';
 import { imageProviderFailure, imageFailureResponse, type ImageFailure } from '@/lib/image-provider-errors';
-import { backendUrl } from '@/lib/backend';
+import { backendUrl, backendHeaders } from '@/lib/backend';
+import { authenticatedUser, isAdminUser, openKey, serviceDb } from '@/lib/ai/server';
+import { orderCandidates, recordProviderFailure, recordProviderSuccess } from '@/lib/ai/orchestration';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { NO_IMAGE_KEY, ADMIN_IMAGE_BACKUP, IMAGE_PROVIDER_BACKUP } from '@/lib/provider-messages';
 
 const MAX_GENERATED_IMAGE_BYTES = 10 * 1024 * 1024;
 const MIN_GENERATED_IMAGE_BYTES = 8 * 1024;
@@ -328,9 +335,9 @@ function cleanVisionDescription(raw: string): string {
 }
 
 async function generateWithCloudflare(prompt: string, signal?: AbortSignal, size: GeneratedImageSize = '1024x1024'): Promise<GeneratedImage> {
-  const endpoint = process.env.CLOUDFLARE_SDXL_URL || 'https://image-api.opundefined.workers.dev/';
+  const endpoint = process.env.CLOUDFLARE_SDXL_URL;
   const apiKey = process.env.CLOUDFLARE_SDXL_KEY || process.env.IMG2IMG_WORKER_KEY;
-  if (!apiKey) throw new Error('Cloudflare image generation is not configured');
+  if (!apiKey || !endpoint) throw new Error('Cloudflare image generation is not configured');
   const dimensions = size === '1024x1536' ? { width: 768, height: 1344 } : size === '1536x1024' ? { width: 1344, height: 768 } : { width: 1024, height: 1024 };
 
   const response = await fetchWithRetry(endpoint, {
@@ -352,7 +359,8 @@ async function generateWithCloudflare(prompt: string, signal?: AbortSignal, size
   if (!mimeType || bytes.length < MIN_GENERATED_IMAGE_BYTES || bytes.length > MAX_GENERATED_IMAGE_BYTES) {
     throw new Error('Cloudflare returned an invalid image payload');
   }
-  return { bytes, mimeType, modelUsed: 'Cloudflare FLUX.1 Schnell' };
+  // The deployed Worker owns the actual model; do not falsely label SDXL as FLUX.
+  return { bytes, mimeType, modelUsed: 'Cloudflare Image' };
 }
 
 async function generateWithOpenAI(prompt: string, signal?: AbortSignal, size: GeneratedImageSize = '1024x1024'): Promise<GeneratedImage> {
@@ -566,9 +574,9 @@ async function editWithPollinations(prompt: string, source: Buffer, mimeType: st
 }
 
 async function editWithCloudflare(prompt: string, source: Buffer, mimeType: string, signal?: AbortSignal): Promise<GeneratedImage> {
-  const endpoint = process.env.IMG2IMG_WORKER_URL || 'https://img2img-worker.opundefined.workers.dev/';
+  const endpoint = process.env.IMG2IMG_WORKER_URL;
   const apiKey = process.env.IMG2IMG_WORKER_KEY;
-  if (!apiKey) throw new Error('Cloudflare image editing is not configured');
+  if (!apiKey || !endpoint) throw new Error('Cloudflare image editing is not configured');
 
   const formData = new FormData();
   formData.append('prompt', prompt);
@@ -726,18 +734,19 @@ async function evaluateGeneratedImage(requestedPrompt: string, image: GeneratedI
   }
 }
 
-async function imageResponse(image: GeneratedImage, verified: boolean) {
+async function imageResponse(image: GeneratedImage, verified: boolean, notice?: string) {
   const stored = await storeGeneratedImage(image.bytes, image.mimeType);
   return NextResponse.json({
     url: `/api/generated-image/${stored.id}`,
     modelUsed: image.modelUsed,
     verified,
+    ...(notice ? { notice } : {}),
   });
 }
 
 async function normalizeInputImage(image: string): Promise<string> {
   if (/^\/api\/attachments\/[a-f0-9-]{36}$/i.test(image)) {
-    const response = await fetch(backendUrl(image), { signal: AbortSignal.timeout(30_000) });
+    const response = await fetch(backendUrl(image), { headers: backendHeaders(), signal: AbortSignal.timeout(30_000) });
     if (!response.ok || !response.headers.get('content-type')?.startsWith('image/')) {
       throw new Error('The stored attachment could not be read as an image.');
     }
@@ -770,7 +779,7 @@ async function normalizeInputImage(image: string): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetchWithRetry(image, { signal: controller.signal });
+    const response = await safePublicFetch(image, { signal: controller.signal });
     if (!response.ok) throw new Error(`Could not download uploaded image (${response.status})`);
     const contentType = response.headers.get('content-type') || 'image/jpeg';
     if (!contentType.startsWith('image/')) throw new Error('Uploaded attachment is not an image');
@@ -783,8 +792,13 @@ async function normalizeInputImage(image: string): Promise<string> {
 }
 
 export async function POST(req: Request) {
+  const denied = requireDeploymentAccess(req);
+  if (denied) return denied;
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json({ error: 'BYOK storage is not configured.' }, { status: 503 });
+  }
   try {
-    const { prompt, model, image, sourcePrompt, size } = await req.json();
+    const { prompt, model, image, sourcePrompt, size, connectedOnly } = await req.json();
     const requestedPrompt = typeof prompt === 'string' ? prompt.trim() : '';
     const requestedSize: GeneratedImageSize = size === '1024x1536' || size === '1536x1024' ? size : '1024x1024';
     const originalSourcePrompt = typeof sourcePrompt === 'string' ? sourcePrompt.trim().slice(0, 600) : '';
@@ -798,6 +812,133 @@ export async function POST(req: Request) {
 
     // Block explicit requests before any model, image analysis, or prompt enhancement runs.
     if (SFW_BLOCKED_TERMS.test(requestedPrompt)) return sfwError();
+
+    let cloudflareFallbackAttempted = false;
+    let backupNotice: string | undefined;
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const imageStartedAt = Date.now();
+      const internal = process.env.VOID_INTERNAL_KEY || '';
+      const supplied = req.headers.get('x-void-internal-key') || '';
+      const trustedInternal = internal.length >= 32 && timingSafeEqual(
+        createHash('sha256').update(internal).digest(), createHash('sha256').update(supplied).digest());
+      const userId = trustedInternal && req.headers.get('x-void-user-id') || await authenticatedUser(req);
+      if (!userId) return NextResponse.json({ error: 'Sign in to generate images.' }, { status: 401 });
+      const admin = await isAdminUser(userId);
+      {
+        const db = serviceDb();
+        const { data: connections } = await db.from('provider_connections').select('*').eq('user_id', userId).eq('enabled', true).eq('status', 'connected');
+        const ids = (connections || []).map(connection => connection.id);
+        const { data: models } = ids.length ? await db.from('provider_models').select('*').in('connection_id', ids).eq('enabled', true)
+          : { data: [] };
+        const preferenceResult = await db.from('routing_preferences').select('image_model_id,fallback_enabled')
+          .eq('user_id', userId).maybeSingle();
+        let imagePreference = preferenceResult.data;
+        if (preferenceResult.error?.code === '42703' || preferenceResult.error?.code === 'PGRST204') {
+          const legacy = await db.from('routing_preferences').select('image_model_id').eq('user_id', userId).maybeSingle();
+          imagePreference = legacy.data ? { ...legacy.data, fallback_enabled: true } : null;
+        } else if (preferenceResult.error) {
+          return NextResponse.json({ error: 'Could not load image routing preferences. Please retry.' }, { status: 503 });
+        }
+        const candidates = orderCandidates((models || []).filter(candidate =>
+          (image ? candidate.capabilities?.imageEditing : candidate.capabilities?.imageGeneration)
+          && connections?.find(connection => connection.id === candidate.connection_id)?.capability_usage?.[image ? 'imageEditing' : 'image'] !== false),
+          imagePreference?.image_model_id, connectedOnly === true ? false : imagePreference?.fallback_enabled !== false);
+        if (!candidates.length && (!admin || connectedOnly === true)) {
+          return NextResponse.json({ error: NO_IMAGE_KEY, code: 'image_key_missing' }, { status: 422 });
+        }
+        backupNotice = candidates.length ? IMAGE_PROVIDER_BACKUP : ADMIN_IMAGE_BACKUP;
+        const sourceData = image ? await normalizeInputImage(String(image)) : null;
+        const sourceMatch = sourceData?.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/i);
+        if (image && !sourceMatch) return NextResponse.json({ error: 'The source image could not be read.' }, { status: 400 });
+        if (sourceMatch && !isPosterRequest) {
+          try {
+            const sourceBytes = Buffer.from(sourceMatch[2], 'base64');
+            const local = await tryLocalImageEdit({ bytes: sourceBytes, mimeType: detectImageMime(sourceBytes) || 'image/jpeg', modelUsed: 'Local edit' }, requestedPrompt);
+            if (local) return imageResponse(local, false);
+          } catch { /* A connected image provider may still complete this edit. */ }
+        }
+        for (const [candidateIndex, candidate] of candidates.entries()) {
+          const connection = connections?.find(item => item.id === candidate.connection_id);
+          if (!connection) continue;
+          try {
+            const apiKey = openKey(connection);
+            let generated: GeneratedImage;
+            if (candidate.provider_id === 'openai') {
+              const form = sourceMatch ? new FormData() : null;
+              if (form && sourceMatch) {
+                form.set('model', candidate.model_id); form.set('prompt', requestedPrompt.slice(0, 1800)); form.set('size', requestedSize);
+                form.set('image', new Blob([new Uint8Array(Buffer.from(sourceMatch[2], 'base64'))], { type: sourceMatch[1] }), 'source.png');
+              }
+              const response = await fetch(`https://api.openai.com/v1/images/${form ? 'edits' : 'generations'}`, { method: 'POST',
+                headers: { ...(!form ? { 'Content-Type': 'application/json' } : {}), Authorization: `Bearer ${apiKey}` },
+                body: form || JSON.stringify({ model: candidate.model_id, prompt: requestedPrompt.slice(0, 1800), n: 1, size: requestedSize }),
+                signal: AbortSignal.any([req.signal, AbortSignal.timeout(90_000)]) });
+              if (!response.ok) {
+                recordProviderFailure(connection.id, response.status);
+                continue;
+              }
+              const payload = await response.json() as { data?: Array<{ b64_json?: string }> };
+              if (!payload.data?.[0]?.b64_json) continue;
+              generated = generatedImageFromBytes(Buffer.from(payload.data[0].b64_json, 'base64'), candidate.display_name);
+            } else if (candidate.provider_id === 'google') {
+              const ai = new GoogleGenAI({ apiKey });
+              const input = sourceMatch ? [{ type: 'text' as const, text: requestedPrompt.slice(0, 3000) },
+                { type: 'image' as const, data: sourceMatch[2], mime_type: sourceMatch[1] as 'image/png' | 'image/jpeg' | 'image/webp' }]
+                : requestedPrompt.slice(0, 3000);
+              const response = await ai.interactions.create({ model: candidate.model_id, input,
+                response_modalities: ['image'], response_format: { type: 'image', aspect_ratio: requestedSize === '1024x1536' ? '2:3' : requestedSize === '1536x1024' ? '3:2' : '1:1', image_size: '1K' } }, { signal: AbortSignal.any([req.signal, AbortSignal.timeout(90_000)]) });
+              if (!response.output_image?.data) continue;
+              generated = generatedImageFromBytes(Buffer.from(response.output_image.data, 'base64'), candidate.display_name);
+            } else continue;
+            const result = await imageResponse(await finalizeImage(generated, requestedPrompt), false);
+            recordProviderSuccess(connection.id);
+            // Usage logs are local-first; do not silently sync image activity.
+            return result;
+          } catch (error) {
+            if (req.signal.aborted) throw error;
+            recordProviderFailure(connection.id);
+            console.warn('[generate-image] Connected image provider failed:',
+              error instanceof Error ? error.name : 'Unknown provider error');
+          }
+        }
+        // Admin-only managed image fallback. It also works when the admin has
+        // no connected image model; Cloudflare credentials stay server-side.
+        const allowCloudflareFallback = connectedOnly !== true && admin && !image && imagePreference?.fallback_enabled !== false
+          && Boolean(process.env.CLOUDFLARE_SDXL_URL)
+          && Boolean(process.env.CLOUDFLARE_SDXL_KEY || process.env.IMG2IMG_WORKER_KEY);
+        if (allowCloudflareFallback) {
+          cloudflareFallbackAttempted = true;
+          try {
+            const promptForCloudflare = isPosterRequest ? buildCloudflarePosterPrompt(requestedPrompt, requestedSize)
+              : buildGenerationPrompt(requestedPrompt, model, HUMAN_SUBJECT_TERMS.test(requestedPrompt));
+            let generated = await generateWithCloudflare(promptForCloudflare,
+              AbortSignal.any([req.signal, AbortSignal.timeout(60_000)]), requestedSize);
+            const review = await evaluateGeneratedImage(requestedPrompt, generated);
+            if (!review.accepted) throw new Error(`Managed image review rejected the result: ${review.reason}`);
+            if (isPosterRequest) generated = { ...generated, bytes: await composeCloudflarePoster(generated.bytes, requestedPrompt, requestedSize), mimeType: 'image/jpeg' };
+            const result = await imageResponse(await finalizeImage(generated, requestedPrompt), review.verified, backupNotice);
+            // Image/voice charges cannot be inferred from text token rates.
+            return result;
+          } catch (error) {
+            if (req.signal.aborted) throw error;
+            console.warn('[generate-image] Managed Cloudflare fallback failed:', error instanceof Error ? error.message : error);
+          }
+        }
+        if (connectedOnly !== true && admin && imagePreference?.fallback_enabled !== false && !image && process.env.VOID_ALLOW_FREE_IMAGE === 'true' && process.env.POLLINATIONS_API_KEY) {
+          try {
+            const freeImage = await generateWithPollinations(requestedPrompt, 'FLUX V1', req.signal, requestedSize);
+            return imageResponse(await finalizeImage(freeImage, requestedPrompt), false, backupNotice);
+          } catch { /* Free resource unavailable. */ }
+        }
+        if (connectedOnly === true || imagePreference?.fallback_enabled === false || !admin) {
+          const attemptedProvider = candidates.length > 0;
+          return NextResponse.json({ error: attemptedProvider
+            ? `${image ? 'Image editing' : 'Image generation'} is temporarily unavailable across your connected providers${cloudflareFallbackAttempted ? ' and Cloudflare' : ''}. Please retry.`
+            : NO_IMAGE_KEY },
+            { status: attemptedProvider ? 503 : 422 });
+        }
+      }
+    }
 
     let imageConditionedPrompt: string | null = null;
 
@@ -821,7 +962,7 @@ export async function POST(req: Request) {
               mimeType: (detectImageMime(buffer) || 'image/jpeg'),
               modelUsed: pollinationsLabel(model),
             }, requestedPrompt);
-            if (localEdit) return imageResponse(localEdit, false);
+            if (localEdit) return imageResponse(localEdit, false, backupNotice);
           } catch (localEditError) {
             console.warn('[generate-image] Local edit could not be applied; trying image providers:', localEditError instanceof Error ? localEditError.message : localEditError);
           }
@@ -934,7 +1075,7 @@ Rules:
             if (review.accepted) {
               console.log(`[generate-image] Edited image accepted from ${edited.modelUsed}: ${review.reason}`);
               const finalized = await finalizeImage(edited, requestedPrompt);
-              return imageResponse(finalized, review.verified);
+              return imageResponse(finalized, review.verified, backupNotice);
             }
             console.warn(`[generate-image] Edited image rejected from ${edited.modelUsed}: ${review.reason}`);
           } catch (editError) {
@@ -986,7 +1127,7 @@ Rules:
               modelUsed: `${reconstructed.modelUsed} · reconstructed edit`,
             }, requestedPrompt);
             console.log(`[generate-image] ${provider.name} accepted: ${review.reason}`);
-            return imageResponse(finalized, review.verified);
+            return imageResponse(finalized, review.verified, backupNotice);
           } catch (reconstructionError) {
             console.warn(`[generate-image] ${provider.name} failed:`, reconstructionError instanceof Error ? reconstructionError.message : reconstructionError);
           }
@@ -998,7 +1139,7 @@ Rules:
             ...safeBestEffort,
             modelUsed: `${safeBestEffort.modelUsed} · best-effort edit`,
           }, requestedPrompt);
-          return imageResponse(finalized, false);
+          return imageResponse(finalized, false, backupNotice);
         }
 
         throw new Error('No image-edit or reconstruction provider produced an acceptable result');
@@ -1014,7 +1155,7 @@ Rules:
     // Exact geometric requests are rendered directly unless the user asked
     // for a finished poster, whose pixels must come entirely from an AI model.
     const simpleShape = isPosterRequest ? null : await renderSimpleShape(requestedPrompt, model);
-    if (simpleShape) return imageResponse(simpleShape, false);
+    if (simpleShape) return imageResponse(simpleShape, false, backupNotice);
 
     // --- Prompt Enhancement using Groq Llama 3.3 70B (Grok-Level Master Prompt Engineer) ---
     let enhancedPrompt = imageConditionedPrompt || requestedPrompt;
@@ -1120,7 +1261,7 @@ OUTPUT RULE: Output ONLY the enhanced raw prompt string. No intro, no quotes, no
       gemini: Boolean(process.env.GEMINI_API_KEY),
       pollinations: Boolean(process.env.POLLINATIONS_API_KEY),
       together: Boolean(process.env.TOGETHER_API_KEY),
-      cloudflare: Boolean(process.env.CLOUDFLARE_SDXL_KEY || process.env.IMG2IMG_WORKER_KEY),
+      cloudflare: Boolean(process.env.CLOUDFLARE_SDXL_URL && (process.env.CLOUDFLARE_SDXL_KEY || process.env.IMG2IMG_WORKER_KEY)),
       openai: Boolean(process.env.OPENAI_API_KEY),
     };
     const providers = imageGenerationProviderOrder(model);
@@ -1129,6 +1270,7 @@ OUTPUT RULE: Output ONLY the enhanced raw prompt string. No intro, no quotes, no
 
     for (const provider of providers) {
       if (req.signal.aborted) throw req.signal.reason;
+      if (provider === 'cloudflare' && cloudflareFallbackAttempted) continue;
       if (generationDeadline.aborted) {
         failures.push(imageProviderFailure(provider, new Error('Image generation timed out')));
         break;
@@ -1147,7 +1289,7 @@ OUTPUT RULE: Output ONLY the enhanced raw prompt string. No intro, no quotes, no
           if (review.accepted) {
             console.log(`[generate-image] Accepted ${generated.modelUsed} result: ${review.reason}`);
             const finalized = await finalizeImage(generated, requestedPrompt);
-            return imageResponse(finalized, review.verified);
+            return imageResponse(finalized, review.verified, backupNotice);
           }
           const rejection = `${generated.modelUsed} rejected: ${review.reason}`;
           failures.push({ provider, kind: 'review', message: rejection });

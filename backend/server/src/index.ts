@@ -1,25 +1,21 @@
 // Load local provider credentials before any routes or clients initialize.
 import './env.js';
 import { createApp } from './app.js';
-import { initDb } from './db/index.js';
-import { startHealthChecker } from './services/health.js';
+import { initEncryptionKey } from './lib/crypto.js';
 import { attachVoiceWebSocket } from './realtime/voice-socket.js';
 
 const PORT = process.env.PORT ?? 3001;
-// Dual-stack ('::') by default so the dashboard is reachable over both IPv4
-// and IPv6 (e.g. IPv6-enabled Docker networks — #180). Hosts with IPv6
-// disabled fall back to IPv4-only below; HOST overrides the default outright.
-const HOST = process.env.HOST ?? '::';
+// Native hosting is private by default; containers explicitly set HOST=0.0.0.0.
+const HOST = process.env.BACKEND_HOST ?? process.env.HOST ?? '127.0.0.1';
 
 async function main() {
-  initDb();
+  // BYOK credentials live in Supabase; startup must not create a legacy key pool.
+  initEncryptionKey();
   const app = createApp();
 
   const onReady = (host: string) => () => {
     const display = host.includes(':') ? `[${host}]` : host;
     console.log(`Server running on http://${display}:${PORT}`);
-    console.log(`Proxy endpoint: http://${display}:${PORT}/v1/chat/completions`);
-    startHealthChecker();
   };
 
   const server = app.listen(Number(PORT), HOST, onReady(HOST));
@@ -29,7 +25,7 @@ async function main() {
     // ipv6.disable=1 and the like) — retry IPv4-only rather than dying.
     // Anything else (EADDRINUSE, an explicit HOST that can't bind) keeps the
     // fail-fast posture documented in main().catch below.
-    if (!process.env.HOST && (err.code === 'EAFNOSUPPORT' || err.code === 'EADDRNOTAVAIL')) {
+    if (!process.env.BACKEND_HOST && !process.env.HOST && (err.code === 'EAFNOSUPPORT' || err.code === 'EADDRNOTAVAIL')) {
       console.warn('[server] IPv6 unavailable on this host — falling back to 0.0.0.0 (IPv4-only)');
       const fallbackServer = app.listen(Number(PORT), '0.0.0.0', onReady('0.0.0.0'));
       attachVoiceWebSocket(fallbackServer);

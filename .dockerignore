@@ -15,6 +15,11 @@
 **/.venv
 **/coverage
 **/.wrangler
+**/.cache
+**/.vercel
+**/venv
+**/*.bak
+**/*.backup
 **/.temp
 **/generated_images
 **/generated_posters
@@ -33,3 +38,5 @@ frontend/scratch/*
 !frontend/scratch/verified-poster.json
 !frontend/scratch/verified-presentation.json
 backend/server/src/update_groq_key.ts
+evaluation-*
+freellmapi

@@ -1,4 +1,4 @@
-import type { ChatToolDefinition } from '@freellmapi/shared/types.js';
+import type { ChatToolDefinition } from '@void/shared/types.js';
 
 /** Result returned by every tool handler. */
 export interface ToolImage {
@@ -19,6 +19,8 @@ export interface ToolImage {
 
 export interface ToolResult {
   content: string;
+  /** Registry discovery only; never inferred from untrusted retrieved text. */
+  availableTools?: string[];
   images?: ToolImage[];
   files?: { name: string; url: string; mimeType: string }[];
   sources?: { url: string; title: string; content?: string }[];

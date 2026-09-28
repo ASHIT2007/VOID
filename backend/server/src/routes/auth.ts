@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   userCount,
   createUser,
@@ -17,8 +18,8 @@ export const authRouter = Router();
 // /logout and /me validate the token themselves.
 
 const credentialsSchema = z.object({
-  email: z.string().email('A valid email is required'),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
+  email: z.string().trim().toLowerCase().email('A valid email is required').max(254),
+  password: z.string().min(8, 'Password must be at least 8 characters').max(256),
 });
 
 // ── Brute-force throttle ──────────────────────────────────────────────────
@@ -33,6 +34,7 @@ function isLockedOut(email: string): boolean {
   return !!a && a.lockedUntil > Date.now();
 }
 function recordFailure(email: string): void {
+  if (attempts.size >= 10000) attempts.delete(attempts.keys().next().value!);
   const key = email.toLowerCase();
   const a = attempts.get(key) ?? { count: 0, lockedUntil: 0 };
   a.count++;
@@ -64,6 +66,13 @@ authRouter.get('/status', (req: Request, res: Response) => {
 // First-run account creation. Only allowed while there are zero users, so it
 // can't be used to add accounts once the dashboard is claimed.
 authRouter.post('/setup', (req: Request, res: Response) => {
+  if (process.env.NODE_ENV === 'production' || process.env.DASHBOARD_SETUP_TOKEN) {
+    const token = process.env.DASHBOARD_SETUP_TOKEN;
+    const supplied = req.get('x-setup-token') || '';
+    if (!token || token.length < 32 || !timingSafeEqual(createHash('sha256').update(token).digest(), createHash('sha256').update(supplied).digest())) {
+      res.status(403).json({ error: { message: 'A valid dashboard setup token is required.' } }); return;
+    }
+  }
   if (userCount() > 0) {
     res.status(409).json({ error: { message: 'Setup already completed. Use login instead.', type: 'setup_complete' } });
     return;

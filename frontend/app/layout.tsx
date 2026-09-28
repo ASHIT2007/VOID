@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Outfit, Lora } from "next/font/google";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import ClientToolsHost from '@/components/ClientToolsHost';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -52,7 +53,7 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} ${outfit.variable} ${lora.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground transition-colors duration-300">
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>{children}<ClientToolsHost /></ThemeProvider>
       </body>
     </html>
   );

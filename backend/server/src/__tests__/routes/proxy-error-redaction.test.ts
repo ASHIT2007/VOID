@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Express } from 'express';
-import { createApp } from '../../app.js';
+import { createApp } from '../helpers/legacy-app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
 import { mintDashboardToken, isGatedApiPath } from '../helpers/auth.js';
 
@@ -92,13 +92,13 @@ describe('Provider error redaction', () => {
     const responseText = JSON.stringify(completion.body);
     expect(responseText).not.toContain(leakedKey);
     expect(responseText).not.toContain(leakedUrl);
-    expect(responseText).toContain('[redacted]');
+    expect(responseText).toContain('Groq API error 401');
 
     const errors = await request(app, 'GET', '/api/analytics/errors?range=24h');
     expect(errors.status).toBe(200);
     const analyticsText = JSON.stringify(errors.body);
     expect(analyticsText).not.toContain(leakedKey);
     expect(analyticsText).not.toContain(leakedUrl);
-    expect(analyticsText).toContain('[redacted]');
+    expect(analyticsText).toContain('Groq API error 401');
   });
 });

@@ -1,6 +1,8 @@
 # Third-party notices
 
-The retained `freellmapi` source and derived gateway, administration dashboard, and shared components use FreeLLMAPI code under the following license. Other installed dependencies retain their respective licenses.
+VOID's browser code workspace redistributes unmodified Pyodide/CPython and QuickJS runtimes. Their license texts are preserved in `docs/licenses/` and bundled into `/sandbox-runtime/NOTICES.txt`. Source links and versions accompany the runtime notices.
+
+The derived agent server and shared components use FreeLLMAPI code under the following license. The duplicate checkout and dashboard have been removed; this notice preserves their attribution. Other installed dependencies retain their respective licenses.
 
 MIT License
 

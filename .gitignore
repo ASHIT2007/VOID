@@ -8,6 +8,7 @@
 
 # Build outputs
 node_modules/
+frontend/public/sandbox-runtime/
 .next/
 out/
 build/
@@ -23,6 +24,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 *.log
+/evaluation-*.json
+/freellmapi/
+/web/
+/frontend/admin-dashboard/
 
 # OS generated files
 .DS_Store

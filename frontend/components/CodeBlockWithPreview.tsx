@@ -16,11 +16,14 @@ import {
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { detectCodeLanguage } from "@/lib/code-language";
-import MindMapViewer, { parseMindMapData } from "./MindMapViewer";
+import { parseMindMapData } from "./MindMapViewer";
 import ChartViewer, { parseChartData } from "./ChartViewer";
-import GraphViewer, { parseGraphData } from "./GraphViewer";
+import { parseGraphData } from "./GraphViewer";
 import { supabase } from "@/lib/supabase";
 import WebPreview from './WebPreview';
+import MermaidRenderer from './MermaidRenderer';
+import { normalizeMermaid } from '@void/shared/diagram-contract.mjs';
+import { mindMapToMermaid, graphToMermaid } from '@/lib/diagram-data';
 
 export interface Artifact {
   identifier: string;
@@ -40,6 +43,7 @@ interface CodeBlockWithPreviewProps {
 export default function CodeBlockWithPreview({
   language = "",
   code,
+  theme = 'dark',
   setActiveArtifact,
   rawProps = {},
 }: CodeBlockWithPreviewProps) {
@@ -48,9 +52,12 @@ export default function CodeBlockWithPreview({
 
   // 1. Specialized Visualizations Check
   let specializedView: React.ReactNode = null;
-  if (langLower === "mindmap" || langLower === "json") {
+  if (langLower === 'mermaid' || (langLower === 'mindmap' && normalizeMermaid(codeString))) {
+    specializedView = <MermaidRenderer chart={codeString} theme={theme === 'light' ? 'light' : 'dark'} />;
+  }
+  if (!specializedView && (langLower === "mindmap" || langLower === "json")) {
     const mapData = parseMindMapData(codeString);
-    if (mapData) specializedView = <MindMapViewer data={mapData} />;
+    if (mapData) specializedView = <MermaidRenderer chart={mindMapToMermaid(mapData)} theme={theme === 'light' ? 'light' : 'dark'} />;
   }
   if (!specializedView && (langLower === "chart" || langLower === "barchart" || langLower === "json")) {
     const chartData = parseChartData(codeString);
@@ -58,7 +65,7 @@ export default function CodeBlockWithPreview({
   }
   if (!specializedView && (langLower === "graph" || langLower === "nodegraph" || langLower === "json")) {
     const graphData = parseGraphData(codeString);
-    if (graphData) specializedView = <GraphViewer data={graphData} />;
+    if (graphData) specializedView = <MermaidRenderer chart={graphToMermaid(graphData)} theme={theme === 'light' ? 'light' : 'dark'} />;
   }
 
   // 2. HTML / SVG / Web App Detection
@@ -114,12 +121,13 @@ export default function CodeBlockWithPreview({
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) throw new Error("Not logged in");
-      await supabase.from("snippets").insert({
+      const { error } = await supabase.from("snippets").insert({
         user_id: user.id,
         title,
         language: langLower || "html",
         code: codeString,
       });
+      if (error) throw error;
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 2000);
     } catch (err) {

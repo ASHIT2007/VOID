@@ -17,7 +17,7 @@ vi.mock('../../providers/index.js', async (importOriginal) => {
   };
 });
 
-const { createApp } = await import('../../app.js');
+const { createApp } = await import('../helpers/legacy-app.js');
 const { initDb, getDb, getUnifiedApiKey } = await import('../../db/index.js');
 const { encrypt } = await import('../../lib/crypto.js');
 const { setRoutingStrategy } = await import('../../services/router.js');

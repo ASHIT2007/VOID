@@ -1,4 +1,4 @@
-import { getDb, getSetting, setSetting } from '../db/index.js';
+import { getDb, hasDb, getSetting, setSetting } from '../db/index.js';
 import { getProvider, resolveProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { canMakeRequest, canUseTokens, isOnCooldown, canUseProvider, getRateLimitStatus } from './ratelimit.js';
@@ -10,6 +10,7 @@ import {
 import { parseBudget } from '../lib/budget.js';
 import type { BaseProvider } from '../providers/base.js';
 import type { Database } from 'better-sqlite3';
+import { currentByokContext, routeByokRequest } from '../ai/byok-context.js';
 
 interface KeyRow {
   id: number;
@@ -54,6 +55,7 @@ export interface RouteResult {
   platform: string;
   displayName: string;
   supportsTools: boolean;
+  toolsAllowed?: boolean;
   tpmLimit: number | null;
   remainingTpmTokens: number | null;
   remainingTpdTokens: number | null;
@@ -133,6 +135,8 @@ export function recordSuccess(modelDbId: number) {
 /** Restore a transiently errored key after a real completion succeeds. */
 export function recordKeySuccess(keyId: number) {
   unavailableKeys.delete(keyId);
+  // Request-scoped BYOK and managed credentials have no legacy database row.
+  if (keyId <= 0 || !hasDb()) return;
   getDb().prepare(`
     UPDATE api_keys
        SET status = 'healthy', last_checked_at = datetime('now')
@@ -428,6 +432,9 @@ function orderChain(chain: ChainRow[], strategy: RoutingStrategy): ChainRow[] {
  * @param requireTools - only consider models that emit structured tool_calls
  */
 export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModel?: number | string, requireVision = false, requireTools = false, allowedModelIds?: ReadonlySet<string>): RouteResult {
+  const byok = currentByokContext();
+  if (byok) return routeByokRequest(byok, estimatedTokens, skipKeys, preferredModel, requireVision, requireTools, allowedModelIds);
+  if (!hasDb()) return routeManagedRequest(estimatedTokens, skipKeys, requireVision, allowedModelIds, preferredModel, requireTools);
   const db = getDb();
 
   const strategy = getRoutingStrategy();
@@ -603,6 +610,93 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
   const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as any;
   err.status = 429;
   throw err;
+}
+
+function getManagedGroqModels(): string[] {
+  const configured = process.env.VOID_MANAGED_GROQ_MODEL;
+  const configuredFallbacks = process.env.VOID_MANAGED_GROQ_FALLBACK_MODELS || process.env.VOID_MANAGED_GROQ_FALLBACK_MODEL;
+
+  if (configured && configured !== 'openai/gpt-oss-120b' && !configuredFallbacks) {
+    return [configured];
+  }
+
+  const primary = configured || 'openai/gpt-oss-120b';
+  const fallbacks = configuredFallbacks
+    ? configuredFallbacks.split(',').map(s => s.trim()).filter(Boolean)
+    : ['openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+
+  return [...new Set([primary, ...fallbacks])];
+}
+
+function routeManagedRequest(
+  estimatedTokens: number,
+  skipKeys?: Set<string>,
+  requireVision = false,
+  allowedModelIds?: ReadonlySet<string>,
+  preferredModel?: number | string,
+  requireTools = false,
+): RouteResult {
+  const apiKey = process.env.GROQ_API_KEY;
+  const keyId = 0;
+  const provider = getProvider('groq');
+  const unavailableUntil = unavailableKeys.get(keyId) ?? 0;
+  if (!apiKey || !provider || process.env.VOID_ALLOW_FREE_CHAT === 'false') {
+    const error = new Error('Connect an AI provider or configure GROQ_API_KEY for managed chat.') as Error & { status: number };
+    error.status = 503;
+    throw error;
+  }
+  if (requireVision || estimatedTokens > 32768) {
+    const error = new Error('No compatible managed model is available. Connect a compatible AI provider.') as Error & { status: number };
+    error.status = 422;
+    throw error;
+  }
+  if (unavailableUntil > Date.now()) {
+    const error = new Error('The managed model is temporarily unavailable. Try again later or connect an AI provider.') as Error & { status: number };
+    error.status = 503;
+    throw error;
+  }
+
+  const preferredStr = typeof preferredModel === 'string' ? preferredModel : undefined;
+  const managedModels = getManagedGroqModels();
+  const candidates = [...new Set([
+    preferredStr,
+    ...managedModels,
+  ].filter(Boolean) as string[])];
+
+  if (allowedModelIds && !candidates.some(c => allowedModelIds.has(c))) {
+    const error = new Error('No compatible managed model is available. Connect a compatible AI provider.') as Error & { status: number };
+    error.status = 422;
+    throw error;
+  }
+
+  for (const candidateModel of candidates) {
+    if (allowedModelIds && !allowedModelIds.has(candidateModel)) continue;
+    if (skipKeys?.has(`groq:${candidateModel}:*`)) continue;
+    if (skipKeys?.has(`groq:${candidateModel}:${keyId}`)) continue;
+    if (skipKeys?.has(`groq:*:${keyId}`)) continue;
+    if (isOnCooldown('groq', candidateModel, keyId)) continue;
+    if (isModelUnavailable('groq', candidateModel)) continue;
+
+    return {
+      provider,
+      apiKey,
+      modelId: candidateModel,
+      modelDbId: 0,
+      keyId,
+      platform: 'groq',
+      displayName: candidateModel === candidates[0] ? 'VOID managed' : `VOID managed (${candidateModel})`,
+      supportsTools: true,
+      tpmLimit: null,
+      remainingTpmTokens: null,
+      remainingTpdTokens: null,
+      rpdLimit: null,
+      tpdLimit: null,
+    };
+  }
+
+  const error = new Error('The managed model is temporarily unavailable. Try again later or connect an AI provider.') as Error & { status: number };
+  error.status = 503;
+  throw error;
 }
 
 /**

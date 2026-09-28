@@ -1,4 +1,7 @@
+import { requireDeploymentAccess } from '@/lib/deployment-access';
 import { NextRequest, NextResponse } from "next/server";
+import { authenticatedUser } from '@/lib/ai/server';
+import { generateUserText } from '@/lib/ai/client';
 
 type EditableKind = "title" | "subtitle" | "body" | "bullet" | "image" | "label";
 
@@ -42,6 +45,8 @@ function localFallback(value: string, instruction: string, kind: EditableKind) {
 }
 
 export async function POST(request: NextRequest) {
+  const denied = requireDeploymentAccess(request);
+  if (denied) return denied;
   try {
     const body = await request.json() as Record<string, unknown>;
     const instruction = clean(body.instruction, 500);
@@ -53,11 +58,22 @@ export async function POST(request: NextRequest) {
     const providers: Provider[] = [
       { url: "https://integrate.api.nvidia.com/v1/chat/completions", key: process.env.NVIDIA_API_KEY, model: "meta/llama-3.1-70b-instruct" },
       { url: "https://api.groq.com/openai/v1/chat/completions", key: process.env.GROQ_API_KEY, model: "llama-3.3-70b-versatile" },
-      { url: process.env.FREELLM_API_URL || "http://127.0.0.1:3001/v1/chat/completions", key: process.env.FREELLM_API_KEY, model: "openai/gpt-oss-20b" },
     ].filter((provider) => Boolean(provider.key));
 
     const system = `You edit exactly one addressable element in a visual document. Return only JSON: {"value":"edited value"}. Obey the instruction without changing facts, adding claims, or referring to any other element. Preserve names, numbers, citations, and meaning unless the instruction explicitly targets them. Keep the result appropriate for a ${kind}.`;
     const user = JSON.stringify({ instruction, currentValue: value, readOnlyDocumentContext: context });
+
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const userId = await authenticatedUser(request);
+      if (!userId) return NextResponse.json({ error: 'Sign in to edit this artifact.' }, { status: 401 });
+      try {
+        const result = await generateUserText(userId, { messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+          maxOutputTokens: 700, signal: request.signal });
+        const edited = parseValue(result.text);
+        if (edited) return NextResponse.json({ value: edited, mode: 'model' }, { headers: { 'Cache-Control': 'no-store' } });
+      } catch { /* Keep the local edit available if connected providers cannot respond. */ }
+      return NextResponse.json({ value: localFallback(value, instruction, kind), mode: 'local' }, { headers: { 'Cache-Control': 'no-store' } });
+    }
 
     for (const provider of providers) {
       try {

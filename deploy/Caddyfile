@@ -1,0 +1,15 @@
+{$VOID_DOMAIN} {
+    request_body {
+        max_size 26MB
+    }
+    header Strict-Transport-Security "max-age=31536000"
+    # The only publicly routed backend path requires a one-use 60-second ticket.
+    @voice path /api/voice-stream
+    reverse_proxy @voice void:3001
+    reverse_proxy void:3000 {
+        flush_interval -1
+        transport http {
+            response_header_timeout 180s
+        }
+    }
+}

@@ -1,7 +1,10 @@
+import { requireDeploymentAccess } from '@/lib/deployment-access';
 import { NextResponse } from "next/server";
 import { readGeneratedImage, storeGeneratedImage, MAX_STORED_IMAGE_BYTES } from "@/lib/generated-image-store";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+  const denied = requireDeploymentAccess(_request);
+  if (denied) return denied;
   try {
     const { id } = await context.params;
     const image = await readGeneratedImage(id);
@@ -19,6 +22,8 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 }
 
 export async function POST(request: Request) {
+  const denied = requireDeploymentAccess(request);
+  if (denied) return denied;
   try {
     const body = await request.json();
     const dataUrl = typeof body?.dataUrl === "string" ? body.dataUrl : "";

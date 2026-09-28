@@ -5,7 +5,7 @@ import {
   salvagePartialAssistantText,
   shouldDiversifyModelAfterFailure,
 } from '../../agent/agent-loop.js';
-import type { ChatToolCall } from '@freellmapi/shared/types.js';
+import type { ChatToolCall } from '@void/shared/types.js';
 
 describe('agent completion validation', () => {
   it('rejects a stream containing neither text nor a usable tool call', () => {

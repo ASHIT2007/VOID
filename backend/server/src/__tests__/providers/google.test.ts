@@ -77,7 +77,7 @@ describe('GoogleProvider', () => {
 
     await expect(
       provider.chatCompletion('test-key', [{ role: 'user', content: 'Hi' }], 'gemini-2.5-pro')
-    ).rejects.toThrow(/Rate limit exceeded/);
+    ).rejects.toThrow(/Google API error 429/);
   });
 
   it('should validate key via models endpoint', async () => {

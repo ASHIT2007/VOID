@@ -37,7 +37,7 @@ describe('adaptive agent task planner', () => {
   });
 
   it('uses a bounded specialist pair for medium-effort presentations', () => {
-    const plan = createExecutionPlan({ message: 'Make a presentation about Sri Lanka debt crisis', mode: 'normal', reasoningEffort: 'medium' });
+    const plan = createExecutionPlan({ message: 'Make a presentation about Sri Lanka debt crisis, preview only', mode: 'normal', reasoningEffort: 'medium' });
     expect(plan.intent).toBe('artifact');
     expect(plan.agents).toHaveLength(2);
     expect(plan.artifactKind).toBe('visual');
@@ -76,18 +76,26 @@ describe('adaptive agent task planner', () => {
 
   it('still creates an improved deck when creation is explicitly requested', () => {
     const plan = createExecutionPlan({ message: 'Rate this PPT and create an improved presentation', mode: 'normal', reasoningEffort: 'medium' });
-    expect(plan.intent).toBe('artifact');
+    expect(plan).toMatchObject({ intent: 'artifact', artifactKind: 'visual' });
+    expect(plan.agents).toHaveLength(2);
+  });
+  it.each(['Generate a PPT about solar energy', 'genrate a ppt on solar energy', 'Create a presentation on solar energy', 'Make a PowerPoint with a preview', 'Download a .pptx and show a preview', 'Make a PPT with diagrams about solar energy'])('routes %s through the presentation skill', message => {
+    expect(createExecutionPlan({ message, mode: 'normal', reasoningEffort: 'medium' })).toMatchObject({ intent: 'artifact', artifactKind: 'visual' });
   });
 
   it('assigns a visual researcher when real images are required', () => {
-    const plan = createExecutionPlan({ message: 'Make a PPT and use real images', mode: 'normal', reasoningEffort: 'high' });
+    const plan = createExecutionPlan({ message: 'Make a PPT and use real images, preview only', mode: 'normal', reasoningEffort: 'high' });
     expect(plan.agents.map((agent) => agent.role)).toContain('visual_researcher');
     expect(plan.agents).toHaveLength(3);
   });
 
   it('honors the max-agent safety cap', () => {
-    const plan = createExecutionPlan({ message: 'Make a researched PPT with real photos', mode: 'deep_research', reasoningEffort: 'high', maxAgents: 2 });
+    const plan = createExecutionPlan({ message: 'Make a researched PPT with real photos, preview only', mode: 'deep_research', reasoningEffort: 'high', maxAgents: 2 });
     expect(plan.agents).toHaveLength(2);
+  });
+  it.each(['Make a PowerPoint on solar energy', 'Create an Excel budget', 'Generate a PDF report'])('retains action tools through a single lead for %s', message => {
+    const plan = createExecutionPlan({ message, mode: 'deep_research', reasoningEffort: 'high' });
+    expect(plan.intent).toBe('simple'); expect(plan.artifactKind).toBeUndefined(); expect(plan.agents.map(agent => agent.role)).toEqual(['general']);
   });
 
   it('uses a specialist pair for a non-trivial medium request', () => {

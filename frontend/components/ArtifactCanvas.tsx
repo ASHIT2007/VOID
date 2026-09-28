@@ -28,9 +28,12 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import MindMapViewer, { parseMindMapData } from './MindMapViewer';
+import { parseMindMapData } from './MindMapViewer';
 import ChartViewer, { parseChartData } from './ChartViewer';
-import GraphViewer, { parseGraphData } from './GraphViewer';
+import { parseGraphData } from './GraphViewer';
+import MermaidRenderer from './MermaidRenderer';
+import { normalizeMermaid } from '@void/shared/diagram-contract.mjs';
+import { graphToMermaid, mindMapToMermaid } from '@/lib/diagram-data';
 import VisualDesignStudio from './VisualDesignStudio';
 import CanvaDocStudio from './CanvaDocStudio';
 import WebPreview from './WebPreview';
@@ -86,6 +89,7 @@ export default function ArtifactCanvas({ artifact, onClose, onArtifactChange, th
     if (['poster', 'infographic', 'banner', 'flyer'].includes(t)) return 'poster';
     if (['canva-doc', 'canvadoc', 'canva', 'report', 'document'].includes(t)) return 'report';
     if (['mindmap', 'mind-map'].includes(t)) return 'mindmap';
+    if (['mermaid', 'flowchart', 'diagram'].includes(t)) return 'mermaid';
     if (['chart', 'barchart', 'linechart'].includes(t)) return 'chart';
     if (['graph', 'nodegraph'].includes(t)) return 'graph';
     if (['python', 'py'].includes(t)) return 'python';
@@ -100,6 +104,7 @@ export default function ArtifactCanvas({ artifact, onClose, onArtifactChange, th
       case 'poster': return 'Poster';
       case 'report': return 'Document';
       case 'mindmap': return 'Mindmap';
+      case 'mermaid': return 'Diagram';
       case 'chart': return 'Chart';
       case 'graph': return 'Graph';
       case 'python': return 'Python';
@@ -140,6 +145,9 @@ export default function ArtifactCanvas({ artifact, onClose, onArtifactChange, th
       } else if (normalizedType === 'markdown') {
         ext = 'md';
         mime = 'text/markdown';
+      } else if (normalizedType === 'mermaid' || (normalizedType === 'mindmap' && normalizeMermaid(localContent))) {
+        ext = 'mmd';
+        mime = 'text/plain';
       } else if (normalizedType === 'mindmap' || normalizedType === 'chart' || normalizedType === 'graph') {
         ext = 'json';
         mime = 'application/json';
@@ -225,13 +233,17 @@ export default function ArtifactCanvas({ artifact, onClose, onArtifactChange, th
       }
     }
 
+    if (normalizedType === 'mermaid' || (normalizedType === 'mindmap' && normalizeMermaid(localContent))) {
+      return <div className="h-full w-full overflow-auto p-4"><MermaidRenderer chart={localContent} theme={theme === 'light' ? 'light' : 'dark'} /></div>;
+    }
+
     // 3. Mindmap Viewer
     if (normalizedType === 'mindmap') {
       const mapData = parseMindMapData(localContent);
       if (mapData) {
         return (
           <div className="w-full h-full overflow-y-auto bg-gray-50 dark:bg-[#18181B] p-4">
-            <MindMapViewer data={mapData} />
+            <MermaidRenderer chart={mindMapToMermaid(mapData)} theme={theme === 'light' ? 'light' : 'dark'} />
           </div>
         );
       }
@@ -255,7 +267,7 @@ export default function ArtifactCanvas({ artifact, onClose, onArtifactChange, th
       if (graphData) {
         return (
           <div className="w-full h-full overflow-y-auto bg-gray-50 dark:bg-[#18181B] p-4">
-            <GraphViewer data={graphData} />
+            <MermaidRenderer chart={graphToMermaid(graphData)} theme={theme === 'light' ? 'light' : 'dark'} />
           </div>
         );
       }

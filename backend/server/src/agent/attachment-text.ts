@@ -1,3 +1,4 @@
+import { safePublicFetch } from '@void/shared/safe-fetch.mjs';
 import { isIP } from 'node:net';
 import JSZip from 'jszip';
 import mammoth from 'mammoth';
@@ -197,9 +198,9 @@ async function readRemoteAttachment(urlValue: string, signal?: AbortSignal): Pro
     throw new Error('The attachment URL is not a permitted public HTTP(S) address.');
   }
 
-  const response = await fetch(url, {
+  const response = await safePublicFetch(url, {
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS),
-    redirect: 'error',
+    maxBytes: MAX_ATTACHMENT_BYTES,
   });
   if (!response.ok || !response.body) throw new Error(`Attachment download failed with status ${response.status}.`);
   const declaredLength = Number(response.headers.get('content-length') || 0);

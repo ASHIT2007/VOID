@@ -3,10 +3,11 @@
 import { useState, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import NextImage from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Menu, Sliders, Activity, User, Monitor, CheckCircle2, RefreshCcw, Save, Trash2, Download, LogOut, Upload, Sun, Moon, Mic, ChevronDown, ChevronRight, Lock } from "lucide-react";
+import { X, Menu, Sliders, Network, Workflow, Route, User, Monitor, CheckCircle2, Save, Trash2, Download, LogOut, Upload, Sun, Moon, ChevronDown, ChevronRight, Lock } from "lucide-react";
 import { useTheme } from "./ThemeProvider";
 import { supabase } from "@/lib/supabase";
-import { getUsageKey, LLM_MODELS, IMG_MODELS, getCompanyLogo } from "./ChatInterface";
+import { rememberLoginProfile } from "@/lib/login-profile";
+import ProviderSettings from './ProviderSettings';
 
 import { ADMIN_EMAIL, getAccountPlan, isAdminEmail, PLAN_DETAILS } from "@/lib/plans";
 
@@ -18,7 +19,7 @@ interface SessionUsage {
   } | undefined;
 }
 
-type SettingsTab = "general" | "models" | "display" | "account";
+type SettingsTab = "general" | "models" | "providers" | "orchestration" | "routing" | "display" | "account";
 
 interface SelectOption {
   value: string;
@@ -33,30 +34,12 @@ function storedSetting(key: string, fallback: string): string {
   return typeof window === "undefined" ? fallback : localStorage.getItem(key) || fallback;
 }
 
-const formatNumber = (num: number) => {
-  if (!Number.isFinite(num)) return 'Unlimited';
-  if (num >= 1000000) {
-    return (num / 1000000).toFixed(1) + 'M';
-  }
-  if (num >= 1000) {
-    return (num / 1000).toFixed(1) + 'k';
-  }
-  return num.toString();
-};
-
-const normalizeTextModel = (_val?: string | null): string => "Auto";
-
-const normalizeImageModel = (val?: string | null): string => {
-  if (!val) return "Auto Image";
-  if (val === "flux_v1") return "FLUX V1";
-  return val;
-};
 
 interface SettingsPageProps {
   onClose: () => void;
   sessionUsage?: SessionUsage;
   onClearChats?: () => void;
-  initialTab?: "general" | "models" | "display" | "account";
+  initialTab?: SettingsTab;
 }
 
 
@@ -156,19 +139,16 @@ function CustomSelect({ value, onChange, options, isPro = true }: { value: strin
   );
 }
 
-export default function SettingsPage({ onClose, sessionUsage, onClearChats, initialTab = "models" }: SettingsPageProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+export default function SettingsPage({ onClose, sessionUsage, onClearChats, initialTab = "providers" }: SettingsPageProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab === "models" ? "providers" : initialTab);
   const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [activeTab]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   
   const { theme, toggleTheme } = useTheme();
 
   // Settings States
   const [systemPrompt, setSystemPrompt] = useState(() => storedSetting("systemPrompt", ""));
-  const [defaultModel, setDefaultModel] = useState(() => normalizeTextModel(storedSetting("defaultModel", "Auto")));
-  const [defaultImageModel, setDefaultImageModel] = useState(() => normalizeImageModel(storedSetting("defaultImageModel", "Auto Image")));
   const [fontSize, setFontSize] = useState(() => storedSetting("fontSize", "medium"));
   const [messageStyle, setMessageStyle] = useState(() => storedSetting("messageStyle", "classic"));
   const [profileDp, setProfileDp] = useState<string | null>(() => storedSetting("profileDp", "") || null);
@@ -185,16 +165,11 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
         
         const { data: profile } = await supabase
           .from('profiles')
-          .select('default_model, system_prompt')
+          .select('system_prompt')
           .eq('id', data.user.id)
           .single();
           
         if (profile) {
-          if (profile.default_model) {
-            const normText = normalizeTextModel(profile.default_model);
-            setDefaultModel(normText);
-            localStorage.setItem("defaultModel", normText);
-          }
           if (profile.system_prompt) {
             setSystemPrompt(profile.system_prompt);
             localStorage.setItem("systemPrompt", profile.system_prompt);
@@ -216,8 +191,6 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
     setGeneralSaveNote("");
     try {
       localStorage.setItem("systemPrompt", systemPrompt);
-      localStorage.setItem("defaultModel", defaultModel);
-      localStorage.setItem("defaultImageModel", defaultImageModel);
       
       // Save to Supabase
       const { data: { user } } = await supabase.auth.getUser();
@@ -226,7 +199,6 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
           id: user.id,
           email: user.email,
           full_name: user.user_metadata?.full_name || user.user_metadata?.name || '',
-          default_model: defaultModel,
           system_prompt: systemPrompt
         };
         const { error } = await supabase.from('profiles').upsert(payload);
@@ -237,7 +209,7 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
       
       setGeneralSaved(true);
       setGeneralSaveNote("Settings saved and applied.");
-      window.dispatchEvent(new CustomEvent("settingsUpdated", { detail: { systemPrompt, defaultModel, defaultImageModel } }));
+      window.dispatchEvent(new CustomEvent("settingsUpdated", { detail: { systemPrompt } }));
       setTimeout(() => {
         setGeneralSaved(false);
         setGeneralSaveNote("");
@@ -245,7 +217,7 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
     } catch (e) {
       console.error(e);
       setGeneralSaveNote("Saved on this device, but cloud sync failed.");
-      window.dispatchEvent(new CustomEvent("settingsUpdated", { detail: { systemPrompt, defaultModel, defaultImageModel } }));
+      window.dispatchEvent(new CustomEvent("settingsUpdated", { detail: { systemPrompt } }));
     } finally {
       setIsSavingGeneral(false);
     }
@@ -261,11 +233,6 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
     setTimeout(() => setDisplaySaved(false), 2400);
   };
 
-  const handleRefresh = () => {
-    setIsRefreshing(true);
-    setTimeout(() => setIsRefreshing(false), 800);
-  };
-
   const handleClearChats = () => {
     if (confirm("Are you sure you want to clear all chat history? This cannot be undone.")) {
       if (onClearChats) onClearChats();
@@ -276,7 +243,7 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
     const data = {
       timestamp: new Date().toISOString(),
       usage: sessionUsage,
-      settings: { systemPrompt, defaultModel, fontSize, messageStyle }
+      settings: { systemPrompt, fontSize, messageStyle }
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -304,6 +271,7 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
         // Save to Supabase globally
         const { data: { user } } = await supabase.auth.getUser();
         if (user && user.email) {
+          rememberLoginProfile(user.email, base64String);
           await supabase.from('profiles').upsert({ 
             id: user.id, 
             email: user.email, 
@@ -317,7 +285,9 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
 
   const tabs: Array<{ id: SettingsTab; label: string; icon: typeof Sliders }> = [
     { id: "general", label: "General", icon: Sliders },
-    { id: "models", label: "Models & Usage", icon: Activity },
+    { id: "providers", label: "AI Providers", icon: Network },
+    { id: "orchestration", label: "Orchestration", icon: Workflow },
+    { id: "routing", label: "Routing", icon: Route },
     { id: "display", label: "Display", icon: Monitor },
     { id: "account", label: "Account", icon: User },
   ];
@@ -449,6 +419,9 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
 
         {/* Settings Content */}
         <div ref={contentRef} data-settings-scroll className="flex-1 min-w-0 p-4 sm:p-8 md:p-12 overflow-y-auto bg-white dark:bg-[#1E1E1E] relative">
+          <div hidden={!['providers', 'orchestration', 'routing'].includes(activeTab)}>
+            <ProviderSettings view={activeTab === 'orchestration' || activeTab === 'routing' ? activeTab : 'providers'} onConnect={() => setActiveTab('providers')} />
+          </div>
           <AnimatePresence mode="wait">
             
             {/* GENERAL TAB */}
@@ -460,36 +433,6 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
                 </div>
                 
                 <div className="space-y-6 bg-gray-50 dark:bg-[#1A1A1A] p-6 rounded-xl border border-gray-200 dark:border-[#2A2A2A]">
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-900 dark:text-white mb-2 flex items-center justify-between">
-                      <span>Default Text Model</span>
-                      <span className="text-xs font-normal text-gray-500">Text & Reasoning AI</span>
-                    </label>
-                    <div className="rounded-xl border border-gray-200 dark:border-[#333] px-4 py-3 text-sm font-medium text-gray-900 dark:text-white">Auto</div>
-                    <p className="text-xs text-gray-500 mt-2">Routes each request using available providers and retries another when one fails. Each answer shows the model that responded.</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-900 dark:text-white mb-2 flex items-center justify-between">
-                      <span>Default Image Generation Model</span>
-                      <span className="text-xs font-normal text-gray-500">Image & Vision AI</span>
-                    </label>
-                    <CustomSelect 
-                        value={defaultImageModel} 
-                        onChange={(val) => setDefaultImageModel(val)} 
-                        options={IMG_MODELS.map(m => ({ 
-                          value: m.name, 
-                          label: m.name,
-                          icon: getCompanyLogo(m.name),
-                          title: m.name,
-                          desc: m.desc,
-                          isPremium: true
-                        }))} 
-                        isPro={true}
-                      />
-                    <p className="text-xs text-gray-500 mt-2">Your preferred image provider is tried first. Generation can switch providers if it fails; the image shows which model produced it.</p>
-                  </div>
-                  
                   <div>
                     <label className="block text-sm font-semibold text-gray-900 dark:text-white mb-2">Custom Instructions (System Prompt)</label>
                     <textarea 
@@ -520,116 +463,6 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
                     Clear All Chats
                   </button>
                 </div>
-              </motion.div>
-            )}
-
-            {/* MODELS & USAGE TAB */}
-            {activeTab === "models" && (
-              <motion.div key="models" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="max-w-4xl mx-auto">
-                <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-8 gap-4">
-                  <div>
-                    <h3 className="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">Models & API Usage</h3>
-                    <p className="text-gray-500 mt-2 text-sm">Monitor your real-time consumption across active models.</p>
-                  </div>
-                  <button onClick={handleRefresh} disabled={isRefreshing} className="flex items-center justify-center gap-2 text-sm font-medium bg-gray-100 hover:bg-gray-200 dark:bg-[#2A2A2A] dark:hover:bg-[#333] text-gray-900 dark:text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-70 border border-transparent dark:border-[#3A3A3A]">
-                    <RefreshCcw size={14} className={isRefreshing ? "animate-spin" : ""} /> 
-                    {isRefreshing ? "Refreshing..." : "Refresh Data"}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {LLM_MODELS.map((model) => {
-                    const usageKey = getUsageKey(model.name);
-                    const usageData = sessionUsage?.[usageKey];
-                    return (
-                      <div 
-                        key={model.name}
-                        className="bg-gray-50 dark:bg-[#1A1A1A] border border-gray-200 dark:border-[#2A2A2A] rounded-2xl p-6 flex flex-col justify-between hover:border-gray-300 dark:hover:border-[#3A3A3A] transition-colors"
-                      >
-                        <div className="mb-8">
-                          <div className="flex justify-between items-start mb-4">
-                            <div
-                              className="flex h-9 w-9 items-center justify-center bg-white dark:bg-[#222] rounded-lg border border-gray-200 dark:border-[#333] [&_img]:!h-5 [&_img]:!w-5 [&_svg]:!h-5 [&_svg]:!w-5"
-                              aria-label={`${model.name} provider`}
-                            >
-                              {getCompanyLogo(model.name)}
-                            </div>
-                            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-gray-200 dark:bg-[#333] text-gray-800 dark:text-gray-300 rounded">Text Model</span>
-                          </div>
-                          <h4 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{model.name}</h4>
-                          <p className="text-xs text-gray-500">{model.desc}</p>
-                        </div>
-                        
-                        <div className="space-y-4">
-                          <div className="bg-white dark:bg-[#222] border border-gray-100 dark:border-[#333] rounded-xl p-4 flex justify-between items-center gap-2 overflow-hidden">
-                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide shrink-0">Tokens</span>
-                            <span className="text-lg font-mono font-bold text-gray-900 dark:text-white truncate" title={(usageData?.total || 0).toLocaleString()}>
-                              {formatNumber(usageData?.total || 0)} <span className="text-gray-400 text-sm font-normal">/ {formatNumber(model.maxUsage)}</span>
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {IMG_MODELS.map((model) => {
-                    const usageKey = getUsageKey(model.name);
-                    const usageData = sessionUsage?.[usageKey];
-                    return (
-                      <div 
-                        key={model.name}
-                        className="bg-gray-50 dark:bg-[#1A1A1A] border border-gray-200 dark:border-[#2A2A2A] rounded-2xl p-6 flex flex-col justify-between hover:border-gray-300 dark:hover:border-[#3A3A3A] transition-colors"
-                      >
-                        <div className="mb-8">
-                          <div className="flex justify-between items-start mb-4">
-                            <div
-                              className="flex h-9 w-9 items-center justify-center bg-white dark:bg-[#222] rounded-lg border border-gray-200 dark:border-[#333] [&_img]:!h-5 [&_img]:!w-5 [&_svg]:!h-5 [&_svg]:!w-5"
-                              aria-label={`${model.name} provider`}
-                            >
-                              {getCompanyLogo(model.name)}
-                            </div>
-                            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-gray-200 dark:bg-[#333] text-gray-800 dark:text-gray-300 rounded">Image Gen</span>
-                          </div>
-                          <h4 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{model.name}</h4>
-                          <p className="text-xs text-gray-500">{model.desc}</p>
-                        </div>
-                        
-                        <div className="space-y-4">
-                          <div className="bg-white dark:bg-[#222] border border-gray-100 dark:border-[#333] rounded-xl p-4 flex justify-between items-center gap-2 overflow-hidden">
-                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide shrink-0">Images</span>
-                            <span className="text-lg font-mono font-bold text-gray-900 dark:text-white truncate" title={(usageData?.generated || 0).toLocaleString()}>
-                              {formatNumber(usageData?.generated || 0)} <span className="text-gray-400 text-sm font-normal">/ {formatNumber(model.maxUsage)}</span>
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* Void Voice Agent Card */}
-                  <div className="bg-gray-50 dark:bg-[#1A1A1A] border border-gray-200 dark:border-[#2A2A2A] rounded-2xl p-6 flex flex-col justify-between hover:border-gray-300 dark:hover:border-[#3A3A3A] transition-colors">
-                    <div className="mb-8">
-                      <div className="flex justify-between items-start mb-4">
-                        <div className="p-2 bg-white dark:bg-[#222] rounded-lg border border-gray-200 dark:border-[#333]">
-                          <Mic size={20} className="text-gray-900 dark:text-white" />
-                        </div>
-                        <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-gray-200 dark:bg-[#333] text-gray-800 dark:text-gray-300 rounded">Voice AI</span>
-                      </div>
-                      <h4 className="text-xl font-bold text-gray-900 dark:text-white mb-1">Void Voice Agent</h4>
-                      <p className="text-xs text-gray-500">Real-time voice interactions</p>
-                    </div>
-                    
-                    <div className="space-y-4">
-                      <div className="bg-white dark:bg-[#222] border border-gray-100 dark:border-[#333] rounded-xl p-4 flex justify-between items-center gap-2 overflow-hidden">
-                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide shrink-0">Queries</span>
-                        <span className="text-lg font-mono font-bold text-gray-900 dark:text-white truncate" title={(sessionUsage?.voice_agent?.queries || 0).toLocaleString()}>
-                          {formatNumber(sessionUsage?.voice_agent?.queries || 0)} <span className="text-gray-400 text-sm font-normal">/ {formatNumber(1000)}</span>
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
               </motion.div>
             )}
 

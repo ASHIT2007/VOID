@@ -7,6 +7,9 @@ import { supabase } from "@/lib/supabase";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { useTheme } from "./ThemeProvider";
+import ChatHistoryOverlay from './ChatHistoryOverlay';
+import ConversationActions from './ConversationActions';
+import { openWorkspace } from '@/lib/workspace/device-store';
 
 type Conversation = {
   id: string;
@@ -69,15 +72,23 @@ export default function Sidebar({
   const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<string>("chat");
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isRecentExpanded, setIsRecentExpanded] = useState(true);
-  const [folderMenuOpenId, setFolderMenuOpenId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [pinnedIds, setPinnedIds] = useState<string[]>([]);
+  const [pinStorageKey, setPinStorageKey] = useState('');
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [previewSnippet, setPreviewSnippet] = useState<SnippetType | null>(null);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
 
   useEffect(() => {
     async function fetchData() {
+      const { data: { session } } = await supabase.auth.getSession();
+      const storageKey = `void:pinned-chats:${session?.user.id || 'anonymous'}`;
+      setPinStorageKey(storageKey);
+      try {
+        const pins = JSON.parse(localStorage.getItem(storageKey) || '[]');
+        setPinnedIds(Array.isArray(pins) ? pins.filter(id => typeof id === 'string') : []);
+      } catch { setPinnedIds([]); }
       const { data: convs } = await supabase
         .from('conversations')
         .select('*')
@@ -138,7 +149,21 @@ export default function Sidebar({
 
   const moveConversationToFolder = async (convId: string, folderId: string | null) => {
     const { error } = await supabase.from('conversations').update({ folder_id: folderId }).eq('id', convId);
-    setFolderMenuOpenId(null);
+    if (error) { setHistoryError('The chat could not be moved. Please retry.'); return; }
+    setHistoryError(null);
+    setConversations(previous => previous.map(chat => chat.id === convId ? { ...chat, folder_id: folderId } : chat));
+  };
+
+  const togglePin = (id: string) => {
+    const next = pinnedIds.includes(id) ? pinnedIds.filter(pin => pin !== id) : [...pinnedIds, id];
+    setPinnedIds(next);
+    try { if (pinStorageKey) localStorage.setItem(pinStorageKey, JSON.stringify(next)); }
+    catch { setHistoryError('Pin updated for this session. Browser storage is unavailable.'); }
+  };
+
+  const openHistory = () => {
+    setHistoryOpen(true);
+    if (window.innerWidth < 640 && !isCollapsed) toggleCollapse();
   };
 
   const handleOpenSettings = (tab?: "general" | "models" | "display" | "account") => {
@@ -148,11 +173,9 @@ export default function Sidebar({
     }
   };
 
-  // Filter logic
-  const displayedConversations = conversations.filter(c => c.title.toLowerCase().includes(searchQuery.toLowerCase()));
-
   return (
     <>
+      <ChatHistoryOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} conversations={conversations} folders={folders} pinnedIds={pinnedIds} loading={isLoading} activeId={activeConversationId} onSelect={onSelectConversation} onPin={togglePin} onMove={moveConversationToFolder} onDelete={onDeleteConversation} error={historyError} />
       {/* Mobile Drawer Backdrop Overlay */}
       {!isCollapsed && (
         <div 
@@ -206,7 +229,7 @@ export default function Sidebar({
             <div className="flex flex-col gap-4 mt-2">
               <div className="relative group">
                 <motion.button
-                  onClick={() => { setActiveTab("search"); toggleCollapse(); }} 
+                  onClick={openHistory}
                   className={`p-2 rounded-lg transition-colors ${activeTab === "search" ? "bg-gray-200 dark:bg-[#2A2A2A]" : "hover:bg-gray-200 dark:hover:bg-[#2A2A2A]"}`}
                 >
                   <Search size={20} className="text-gray-500" />
@@ -218,7 +241,7 @@ export default function Sidebar({
 
               <div className="relative group">
                 <motion.button
-                  onClick={() => { setActiveTab("chat"); toggleCollapse(); }} 
+                  onClick={openHistory}
                   className={`p-2 rounded-lg transition-colors ${activeTab === "chat" ? "bg-gray-200 dark:bg-[#2A2A2A]" : "hover:bg-gray-200 dark:hover:bg-[#2A2A2A]"}`}
                 >
                   <MessageSquare size={20} className="text-gray-500" />
@@ -238,6 +261,13 @@ export default function Sidebar({
                 <div className="absolute left-full top-1/2 -translate-y-1/2 ml-4 bg-[#333] text-gray-100 text-[13px] font-medium px-3 py-1.5 rounded-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 shadow-sm border border-[#444] transition-all duration-200 translate-x-[-4px] group-hover:translate-x-0">
                   Folders
                 </div>
+              </div>
+
+              <div className="relative group">
+                <motion.button aria-label="Open workspace" title="Workspace" whileTap={{ scale: .94 }} onClick={() => openWorkspace()} className="p-2 rounded-lg text-gray-500 transition-colors hover:bg-gray-200 dark:hover:bg-[#2A2A2A]">
+                  <Briefcase size={20} />
+                </motion.button>
+                <div className="absolute left-full top-1/2 -translate-y-1/2 ml-4 rounded-md border border-[#444] bg-[#333] px-3 py-1.5 text-[13px] text-gray-100 opacity-0 transition-opacity group-hover:opacity-100 pointer-events-none">Workspace</div>
               </div>
 
               <div className="relative group">
@@ -283,7 +313,7 @@ export default function Sidebar({
               <div className="relative group mb-2">
                 <motion.button
                   onClick={() => handleOpenSettings("account")} 
-                  className="w-10 h-10 rounded-full bg-[#D4D0C5] flex items-center justify-center font-semibold text-xl text-gray-900 border-2 border-transparent hover:border-gray-500 transition-all shadow-md overflow-hidden"
+                  className="w-10 h-10 rounded-full bg-[#D4D4D4] flex items-center justify-center font-semibold text-xl text-gray-900 border-2 border-transparent hover:border-gray-500 transition-all shadow-md overflow-hidden"
                 >
                   {avatarUrl ? (
                     <img src={avatarUrl} alt="Profile" className="w-full h-full object-cover" />
@@ -333,35 +363,12 @@ export default function Sidebar({
             
             <div className="flex-1 overflow-y-auto p-3 space-y-1">
               <div className="flex flex-col gap-1 mb-6">
-                <motion.button onClick={() => setActiveTab("chat")} className={`w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg transition-colors text-sm font-medium ${activeTab === "chat" ? "bg-gray-200 dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100" : "text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] hover:text-gray-900 dark:hover:text-gray-100"}`}><MessageSquare size={16} /> Recent Chats</motion.button>
-                <motion.button onClick={() => setActiveTab("search")} className={`w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg transition-colors text-sm font-medium ${activeTab === "search" ? "bg-gray-200 dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100" : "text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] hover:text-gray-900 dark:hover:text-gray-100"}`}><Search size={16} /> Search</motion.button>
+                <motion.button onClick={openHistory} className={`w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg transition-colors text-sm font-medium ${activeTab === "chat" ? "bg-gray-200 dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100" : "text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] hover:text-gray-900 dark:hover:text-gray-100"}`}><MessageSquare size={16} /> Recent Chats</motion.button>
+                <motion.button onClick={openHistory} className={`w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg transition-colors text-sm font-medium ${activeTab === "search" ? "bg-gray-200 dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100" : "text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] hover:text-gray-900 dark:hover:text-gray-100"}`}><Search size={16} /> Search</motion.button>
                 <motion.button onClick={() => setActiveTab("folders")} className={`w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg transition-colors text-sm font-medium ${activeTab === "folders" ? "bg-gray-200 dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100" : "text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] hover:text-gray-900 dark:hover:text-gray-100"}`}><Folder size={16} /> Folders</motion.button>
                 <motion.button onClick={() => setActiveTab("code")} className={`w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg transition-colors text-sm font-medium ${activeTab === "code" ? "bg-gray-200 dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100" : "text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] hover:text-gray-900 dark:hover:text-gray-100"}`}><Code size={16} /> Code Snippets</motion.button>
+                <motion.button aria-label="Open workspace" whileTap={{ scale: .98 }} onClick={() => openWorkspace()} className="w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg transition-colors text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] hover:text-gray-900 dark:hover:text-gray-100"><Briefcase size={16} /> Workspace</motion.button>
               </div>
-
-              {(activeTab === "chat" || activeTab === "search") && (
-                <div 
-                  className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-2 flex justify-between items-center cursor-pointer hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-                  onClick={() => setIsRecentExpanded(!isRecentExpanded)}
-                >
-                  <div className="flex items-center gap-1">
-                    {isRecentExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    <span>Recent</span>
-                  </div>
-                </div>
-              )}
-              
-              {activeTab === "search" && (
-                <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="px-2 mb-4">
-                  <input 
-                    type="text" 
-                    placeholder="Filter chats..." 
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                    className="w-full bg-white dark:bg-[#2A2A2A] border border-gray-200 dark:border-[#3A3A3A] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </motion.div>
-              )}
 
               {activeTab === "folders" && (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-2 mb-4">
@@ -375,7 +382,7 @@ export default function Sidebar({
                           value={newFolderName}
                           onChange={(e) => setNewFolderName(e.target.value)}
                           placeholder="Folder name..."
-                          className="flex-1 min-w-0 w-full bg-white dark:bg-[#1E1E1E] border border-gray-200 dark:border-[#333] rounded-lg px-2 py-1.5 text-sm text-gray-900 dark:text-white outline-none focus:border-blue-500"
+                          className="flex-1 min-w-0 w-full bg-white dark:bg-[#1E1E1E] border border-gray-200 dark:border-[#333] rounded-lg px-2 py-1.5 text-sm text-gray-900 dark:text-white outline-none focus:border-gray-500"
                           autoFocus
                           onKeyDown={(e) => {
                             if (e.key === 'Escape') {
@@ -387,7 +394,7 @@ export default function Sidebar({
                         <button type="submit" disabled={!newFolderName.trim()} className="shrink-0 p-1.5 bg-gray-800 dark:bg-[#2A2A2A] text-white rounded-lg hover:bg-gray-700 dark:hover:bg-[#333] transition-colors disabled:opacity-50 flex items-center justify-center">
                           <Check size={14} />
                         </button>
-                        <button type="button" onClick={() => { setIsCreatingFolder(false); setNewFolderName(''); }} className="shrink-0 p-1.5 bg-red-500/10 text-red-500 dark:bg-red-500/20 dark:text-red-400 rounded-lg hover:bg-red-500/20 dark:hover:bg-red-500/30 transition-colors flex items-center justify-center">
+                        <button type="button" onClick={() => { setIsCreatingFolder(false); setNewFolderName(''); }} className="shrink-0 p-1.5 bg-gray-500/10 text-gray-500 dark:bg-gray-500/20 dark:text-gray-400 rounded-lg hover:bg-gray-500/20 dark:hover:bg-gray-500/30 transition-colors flex items-center justify-center">
                           <X size={14} />
                         </button>
                       </form>
@@ -398,23 +405,21 @@ export default function Sidebar({
                       <div className="group flex items-center justify-between w-full">
                         <button onClick={() => toggleFolder(folder.id)} className="flex-1 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 font-medium py-1 text-left">
                           {expandedFolders[folder.id] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          <Folder size={14} className="text-yellow-500 fill-yellow-500" /> {folder.name}
+                          <Folder size={14} className="text-gray-500 fill-gray-500" /> {folder.name}
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); deleteFolder(folder.id); }} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-1.5 rounded-md hover:bg-red-500/10 dark:hover:bg-red-500/20 text-gray-400 hover:text-red-500 transition-all shrink-0" title="Delete Folder">
+                        <button onClick={(e) => { e.stopPropagation(); deleteFolder(folder.id); }} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-1.5 rounded-md hover:bg-gray-500/10 dark:hover:bg-gray-500/20 text-gray-400 hover:text-gray-500 transition-all shrink-0" title="Delete Folder">
                           <Trash2 size={14} />
                         </button>
                       </div>
                       <AnimatePresence>
                         {expandedFolders[folder.id] && (
-                          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="pl-6 space-y-1 mt-1 border-l-2 border-gray-200 dark:border-[#3A3A3A] ml-2 overflow-hidden">
+                          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="pl-6 space-y-1 mt-1 border-l-2 border-gray-200 dark:border-[#3A3A3A] ml-2">
                             {conversations.filter(c => c.folder_id === folder.id).map(conv => (
                               <div key={conv.id} className="group flex items-center justify-between">
                                 <button onClick={() => onSelectConversation(conv.id)} className="block flex-1 text-left truncate text-xs text-gray-500 hover:text-gray-900 dark:hover:text-white py-1 pr-2">
                                   {conv.title}
                                 </button>
-                                <button onClick={(e) => { e.stopPropagation(); moveConversationToFolder(conv.id, null); }} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-500 transition-all shrink-0" title="Remove from folder">
-                                  <Trash2 size={12} />
-                                </button>
+                                <ConversationActions title={conv.title} folderId={conv.folder_id} pinned={pinnedIds.includes(conv.id)} folders={folders} onPin={() => togglePin(conv.id)} onMove={folder => moveConversationToFolder(conv.id, folder)} onDelete={() => onDeleteConversation(conv.id)} />
                               </div>
                             ))}
                             {conversations.filter(c => c.folder_id === folder.id).length === 0 && <div className="text-xs text-gray-400 py-1 italic">Empty folder</div>}
@@ -431,7 +436,7 @@ export default function Sidebar({
                   {snippets.length === 0 ? <div className="text-xs text-gray-400 italic">No snippets saved.</div> : snippets.map(snippet => (
                     <div 
                       key={snippet.id} 
-                      className="w-full bg-white dark:bg-[#2A2A2A] border border-gray-200 dark:border-[#3A3A3A] rounded-lg p-2 flex flex-col hover:border-blue-500 dark:hover:border-blue-500 transition-colors text-left overflow-hidden relative group"
+                      className="w-full bg-white dark:bg-[#2A2A2A] border border-gray-200 dark:border-[#3A3A3A] rounded-lg p-2 flex flex-col hover:border-gray-500 dark:hover:border-gray-500 transition-colors text-left overflow-hidden relative group"
                     >
                       <div 
                         className="flex justify-between items-center w-full cursor-pointer"
@@ -446,10 +451,10 @@ export default function Sidebar({
                               navigator.clipboard.writeText(snippet.code);
                               const el = e.currentTarget;
                               const original = el.innerHTML;
-                              el.innerHTML = '<span class="text-[10px] text-blue-500 font-medium">Copied</span>';
+                              el.innerHTML = '<span class="text-[10px] text-gray-500 font-medium">Copied</span>';
                               setTimeout(() => { el.innerHTML = original; }, 1500);
                             }}
-                            className="p-1 rounded text-gray-400 hover:bg-gray-100 dark:hover:bg-[#3A3A3A] hover:text-blue-500 transition-colors shrink-0"
+                            className="p-1 rounded text-gray-400 hover:bg-gray-100 dark:hover:bg-[#3A3A3A] hover:text-gray-500 transition-colors shrink-0"
                             title="Copy code"
                           >
                             <Copy size={12} />
@@ -459,7 +464,7 @@ export default function Sidebar({
                               e.stopPropagation(); 
                               deleteSnippet(snippet.id); 
                             }} 
-                            className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-500 transition-all shrink-0"
+                            className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-900/30 text-gray-400 hover:text-gray-500 transition-all shrink-0"
                             title="Delete Snippet"
                           >
                             <Trash2 size={12} />
@@ -472,61 +477,6 @@ export default function Sidebar({
                 </motion.div>
               )}
 
-              {(activeTab === "chat" || activeTab === "search") && (
-                <AnimatePresence>
-                  {isLoading ? <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-sm text-gray-500 px-2 animate-pulse">Loading...</motion.div> : displayedConversations.length === 0 ? <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-sm text-gray-500 px-2">No active conversations.</motion.div> : isRecentExpanded && displayedConversations.map((conv, i) => (
-                    <motion.div 
-                      key={conv.id} 
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: i * 0.03, duration: 0.2 }}
-                      className="flex flex-col"
-                    >
-                      <div className={`group flex items-center justify-between rounded-lg transition-colors ${activeConversationId === conv.id ? "bg-gray-200 dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100" : "hover:bg-gray-200 dark:hover:bg-[#2A2A2A] text-gray-600 dark:text-gray-400"}`}>
-                        <button onClick={() => onSelectConversation(conv.id)} className="flex-1 flex items-center gap-3 text-left px-3 py-3 overflow-hidden">
-                          <MessageSquare size={16} className={activeConversationId === conv.id ? "text-gray-900 dark:text-gray-100" : "text-gray-500"} />
-                          <span className="truncate text-sm font-medium">{conv.title || "New Conversation"}</span>
-                        </button>
-                        <div className="flex items-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity pr-1">
-                          <button onClick={(e) => { e.stopPropagation(); setFolderMenuOpenId(folderMenuOpenId === conv.id ? null : conv.id); }} className="p-1.5 rounded-md hover:bg-gray-300 dark:hover:bg-[#3A3A3A] text-gray-500 hover:text-blue-500 transition-colors" title="Move to Folder">
-                            <FolderPlus size={14} />
-                          </button>
-                          <button onClick={(e) => { e.stopPropagation(); onDeleteConversation(conv.id); }} className="p-1.5 rounded-md hover:bg-gray-300 dark:hover:bg-[#3A3A3A] text-gray-500 hover:text-red-500 transition-colors" title="Delete Chat">
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                      <AnimatePresence>
-                        {folderMenuOpenId === conv.id && (
-                          <motion.div 
-                            initial={{ height: 0, opacity: 0 }} 
-                            animate={{ height: "auto", opacity: 1 }} 
-                            exit={{ height: 0, opacity: 0 }}
-                            className="overflow-hidden bg-gray-100 dark:bg-[#1E1E1E] rounded-lg mt-1 border border-gray-200 dark:border-[#3A3A3A]"
-                          >
-                            <div className="p-1 space-y-0.5 max-h-40 overflow-y-auto">
-                              {conv.folder_id && (
-                                <button onClick={() => moveConversationToFolder(conv.id, null)} className="w-full text-left px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#2A2A2A] rounded transition-colors italic flex items-center gap-2">
-                                  <Folder size={12} className="opacity-50" />
-                                  Remove from folder
-                                </button>
-                              )}
-                              {folders.map(f => (
-                                <button key={f.id} onClick={() => moveConversationToFolder(conv.id, f.id)} className={`w-full text-left px-2 py-1.5 text-xs rounded transition-colors flex items-center gap-2 ${conv.folder_id === f.id ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-medium" : "text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#2A2A2A]"}`}>
-                                  <Folder size={12} />
-                                  <span className="truncate flex-1">{f.name}</span>
-                                  {conv.folder_id === f.id && <CheckCircle2 size={12} />}
-                                </button>
-                              ))}
-                              {folders.length === 0 && <div className="px-2 py-1 text-xs text-gray-400 italic">No folders created</div>}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              )}
               </div>
               
               <div className="p-4 border-t border-gray-200 dark:border-[#2A2A2A] flex flex-col gap-1 shrink-0">
@@ -559,7 +509,7 @@ export default function Sidebar({
                       navigator.clipboard.writeText(previewSnippet.code);
                       const el = e.currentTarget;
                       const original = el.innerHTML;
-                      el.innerHTML = '<span class="text-xs text-blue-500 font-medium px-1">Copied</span>';
+                      el.innerHTML = '<span class="text-xs text-gray-500 font-medium px-1">Copied</span>';
                       setTimeout(() => { el.innerHTML = original; }, 1500);
                     }}
                     className="p-1.5 text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-[#333] rounded-lg transition-colors flex items-center justify-center"

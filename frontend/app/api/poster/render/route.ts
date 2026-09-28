@@ -1,8 +1,10 @@
+import { requireDeploymentAccess } from '@/lib/deployment-access';
 import { NextResponse } from "next/server";
 import { generatePosterLayout } from "@/lib/poster/llm_router";
 import { renderPosterAsset, type PosterMediaAsset } from "@/lib/poster/canvas_renderer";
 import { extractChartFromText } from "@/lib/analysis-visuals";
-import { backendUrl } from "@/lib/backend";
+import { backendUrl, backendHeaders } from "@/lib/backend";
+import { authenticatedUser } from '@/lib/ai/server';
 
 // Embed attributable raster assets only from known CDNs. Validate redirects too.
 function allowedImageUrl(value: string): boolean {
@@ -50,7 +52,7 @@ async function downloadImage(image: { url: string; sourceUrl?: string; title?: s
 async function findSubjectImages(subjects: string[]): Promise<PosterMediaAsset[]> {
   if (!subjects.length) return [];
   try {
-    const response = await fetch(backendUrl('/api/agent/media'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const response = await fetch(backendUrl('/api/agent/media'), { method: 'POST', headers: backendHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ subjects }), signal: AbortSignal.timeout(38_000) });
     if (!response.ok) return [];
     const result = await response.json();
@@ -61,6 +63,8 @@ async function findSubjectImages(subjects: string[]): Promise<PosterMediaAsset[]
 }
 
 export async function POST(req: Request) {
+  const denied = requireDeploymentAccess(req);
+  if (denied) return denied;
   try {
     const { topic, rawText } = await req.json();
     if (typeof topic !== 'string' || !topic.trim() || topic.length > 12000 || (rawText !== undefined && (typeof rawText !== 'string' || rawText.length > 24000))) {
@@ -70,7 +74,9 @@ export async function POST(req: Request) {
     const wantsInfographic = /\b(?:infographics?|information graphic|visual (?:analysis|explainer|summary|overview|breakdown)|at[- ]a[- ]glance)\b/i.test(topic)
       || /\b(?:analy[sz]e|explain|summari[sz]e)\b[^.!?]{0,80}\bvisually\b/i.test(topic);
     const subject = topic.split(/\n\nRequested changes:/i)[0].replace(/^.*?\b(?:infographics?|information graphic|visual (?:analysis|explainer|summary|overview|breakdown))\s*(?:on|about|for|of)?\s*/i, '').trim();
-    const { layout, providerUsed } = await generatePosterLayout(subject, brief, wantsInfographic);
+    const userId = process.env.SUPABASE_SERVICE_ROLE_KEY ? await authenticatedUser(req) : null;
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY && !userId) return NextResponse.json({ error: 'Sign in to create this visual.' }, { status: 401 });
+    const { layout, providerUsed } = await generatePosterLayout(subject, brief, wantsInfographic, userId || undefined);
     // Cached layouts belong to the content generator; never mutate them.
     const renderLayout = { ...layout, sections: layout.sections.map((section) => ({ ...section })) };
     const suppliedChart = extractChartFromText(brief);

@@ -12,8 +12,8 @@ import { inspectionAnswer } from '../../agent/workspace-inspection.js';
 import { createExecutionPlan } from '../../agent/task-planner.js';
 import { classifyMediaIntent } from '../../agent/media-orchestrator.js';
 import { workspaceInspectionTools } from '@void/shared/chat-intent.mjs';
-const flow = '```mermaid\nflowchart TD\n  A["Start"] --> B["Enter username and password"]\n  B --> C{"Valid credentials?"}\n  C -->|Yes| D["Dashboard"]\n  C -->|No| B\n```';
-const mind = '```mermaid\nmindmap\n  root((Machine learning))\n    Supervised learning\n      Classification\n      Regression\n    Unsupervised learning\n      Clustering\n    Reinforcement learning\n      Rewards\n```';
+const flow = 'Enter your credentials, validate them, and open the dashboard only when validation succeeds. Otherwise, retry.\n\n```mermaid\nflowchart TD\n  A["Start"] --> B["Enter username and password"]\n  B --> C{"Valid credentials?"}\n  C -->|Yes| D["Dashboard"]\n  C -->|No| B\n```';
+const mind = 'Study supervised, unsupervised and reinforcement learning separately. Practice one small project for each approach.\n\n```mermaid\nmindmap\n  root((Machine learning))\n    Supervised learning\n      Classification\n      Regression\n    Unsupervised learning\n      Clustering\n    Reinforcement learning\n      Rewards\n```';
 async function* text(content: string) { yield { id: 'test', choices: [{ index: 0, delta: { content }, finish_reason: null }] }; yield { id: 'test', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }; }
 async function turn(message: string, events: AgentEvent[] = []) {
   await runEffortTurn({ sessionId: crypto.randomUUID(), message, mode: 'deep_research', reasoningEffort: 'high', onEvent: event => events.push(event), signal: new AbortController().signal });
@@ -41,14 +41,16 @@ describe('native requests through the full effort/agent/tool workflow', () => {
     expect(mock.stream).toHaveBeenCalledTimes(2);
     expect(events.filter(event => event.type === 'text_delta').map(event => event.content).join('')).toBe(flow);
   });
-  it('returns a completed render_diagram result without an extra model rewrite', async () => {
-    mock.stream.mockImplementation(async function* () {
+  it('writes an explanation after rendering and retains the completed diagram', async () => {
+    mock.stream.mockImplementationOnce(async function* () {
       yield { id: 'test', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'diagram-1', type: 'function', function: { name: 'render_diagram', arguments: JSON.stringify({ code: 'flowchart TD\nA["Start"] --> B["Login"]' }) } }] }, finish_reason: null }] };
       yield { id: 'test', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] };
-    });
+    }).mockImplementationOnce(() => text('Enter your username and password to sign in. The diagram shows the start of that process.'));
     const events = await turn('make a mermaid flowchart for user login');
-    expect(mock.stream).toHaveBeenCalledTimes(1);
-    expect(events.filter(event => event.type === 'text_delta').map(event => event.content).join('')).toBe('```mermaid\nflowchart TD\nA["Start"] --> B["Login"]\n```');
+    expect(mock.stream).toHaveBeenCalledTimes(2);
+    const answer = events.filter(event => event.type === 'text_delta').map(event => event.content).join('');
+    expect(answer).toContain('Enter your username and password');
+    expect(answer).toContain('```mermaid\nflowchart TD\nA["Start"] --> B["Login"]\n```');
     expect(events.at(-1)?.type).toBe('done');
   });
   it('never substitutes a failed mind map with a deck, research findings or images', async () => {
@@ -59,20 +61,40 @@ describe('native requests through the full effort/agent/tool workflow', () => {
     expect(events.at(-1)).toMatchObject({ type: 'error', message: expect.stringContaining('complete diagram') });
   });
   it('delivers every diagram when the model renders a flowchart and a mind map together', async () => {
-    mock.stream.mockImplementation(async function* () {
+    mock.stream.mockImplementationOnce(async function* () {
       yield { id: 'test', choices: [{ index: 0, delta: { tool_calls: [
         { index: 0, id: 'flow', type: 'function', function: { name: 'render_diagram', arguments: JSON.stringify({ code: 'flowchart TD\nA["Wake up"] --> B["Walk"]' }) } },
         { index: 1, id: 'mind', type: 'function', function: { name: 'render_diagram', arguments: JSON.stringify({ code: 'mindmap\n  root((Weekend))\n    Food\n    Outdoors' }) } },
       ] }, finish_reason: null }] };
       yield { id: 'test', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] };
-    });
+    }).mockImplementationOnce(() => text('Choose an activity for the weekend. The flowchart shows the order, while the mind map groups the available activities.'));
     const events = await turn('make a weekend flowchart and mind map');
-    expect(mock.stream).toHaveBeenCalledTimes(1);
+    expect(mock.stream).toHaveBeenCalledTimes(2);
     expect(events.filter(event => event.type === 'tool_result')).toHaveLength(2);
     const answer = events.filter(event => event.type === 'text_delta').map(event => event.content).join('');
     expect(answer).toContain('root((Weekend))');
     expect(answer).toContain('flowchart TD');
     expect(events.at(-1)?.type).toBe('done');
+  });
+  it('adds a compact mind map to an implicit study roadmap while preserving study guidance', async () => {
+    const content = 'Start with complexity and arrays, then practice trees, graphs and dynamic programming. Solve problems regularly and review mistakes.\n\n```mermaid\nmindmap\n  root((DSA))\n    Foundations\n      Complexity\n    Structures\n      Arrays\n    Algorithms\n      Recursion\n```';
+    mock.stream.mockImplementation(() => text(content));
+    const events = await turn('how can i prep dsa from begging to advanced');
+    expect(events.filter(event => event.type === 'text_delta').map(event => event.content).join('')).toBe(content);
+    expect(events.at(-1)?.type).toBe('done');
+    expect(mock.stream.mock.calls[0][1].some((message: { content: string }) => message.content.includes('requested diagram type is mindmap'))).toBe(true);
+  });
+  it('honors a correction from mind map to Mermaid flowchart', async () => {
+    mock.stream.mockImplementationOnce(() => text(mind)).mockImplementationOnce(() => text(flow));
+    const events = await turn('mermaid diagram not mind map');
+    expect(mock.stream).toHaveBeenCalledTimes(2);
+    expect(events.filter(event => event.type === 'text_delta').map(event => event.content).join('')).toBe(flow);
+  });
+  it('repairs real Mermaid syntax errors before delivering the response', async () => {
+    mock.stream.mockImplementationOnce(() => text('The process starts with a login and finishes when credentials are accepted.\n\n```mermaid\nflowchart TD\nA[Unclosed --> B\n```')).mockImplementationOnce(() => text(flow));
+    const events = await turn('make a flowchart for user login');
+    expect(mock.stream).toHaveBeenCalledTimes(2);
+    expect(events.filter(event => event.type === 'text_delta').map(event => event.content).join('')).toBe(flow);
   });
   it('executes usage inspection without asking a model to guess', async () => {
     const events: AgentEvent[] = [];

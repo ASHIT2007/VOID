@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { evaluateMediaRelevance, deriveMediaSubject, CLASSIFIER_UNAVAILABLE_REASON } from './semantic-media.js';
+import { evaluateMediaRelevance, deriveMediaSubject, isMediaClassifierFailure } from './semantic-media.js';
 export { evaluateMediaRelevance, deriveMediaSubject, parseSemanticMediaDecision, type SemanticMediaDecision } from './semantic-media.js';
 import { isDiagramRequest, workspaceInspectionTools } from '@void/shared/chat-intent.mjs';
 import { z } from 'zod';
@@ -392,8 +392,8 @@ export async function runMediaWorker(options: AgentLoopOptions & { responseText?
   onEvent({ type: 'media_status', status: 'planning', label: 'Checking whether reference images help' });
   const semantic = await evaluateMediaRelevance(options, responseText);
   const subject = deriveMediaSubject(message, semantic);
-  if (!semantic.should_search && semantic.reason === CLASSIFIER_UNAVAILABLE_REASON) {
-    onEvent({ type: 'media_status', status: 'failed', label: 'Image relevance model unavailable', reason: semantic.reason });
+  if (isMediaClassifierFailure(semantic)) {
+    onEvent({ type: 'media_status', status: 'failed', label: 'Image relevance check failed', reason: semantic.reason });
     return [];
   }
   if (!semantic.should_search || !subject) return omit(semantic.reason);

@@ -29,6 +29,11 @@ describe('task progress labels', () => {
     expect(progressLabel({ logs: logs.slice(1) })).toBe('Reviewing your question');
     expect(progressLabel({ logs, stage: 'generating' })).toBe('Writing your answer');
   });
+  it('keeps the image omission or failure reason in the execution trace', () => {
+    expect(progressLogForEvent({ type: 'media_status', status: 'omitted', label: 'Web images omitted', reason: 'No concrete visual entity is central to the answer.' }))
+      .toMatchObject({ kind: 'media', state: 'omitted', query: 'No concrete visual entity is central to the answer.' });
+    expect(progressLogForEvent({ type: 'media_status', status: 'failed', label: 'Image relevance check failed', reason: 'Model quota unavailable.' }).query).toBe('Model quota unavailable.');
+  });
 
   it('preserves worker tool details and repeated operations in chronological order', () => {
     const search = progressLogForEvent({ type: 'agent_status', operation: 'Searching the web', target: 'model comparison', status: 'started' });

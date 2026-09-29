@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { requestedFileTools } from '@void/shared/file-intent.mjs';
-import { isDiagramRequest } from '@void/shared/chat-intent.mjs';
+import { isDiagramRequest, isStudyRoadmapRequest } from '@void/shared/chat-intent.mjs';
 import { runWorkspaceInspection } from './workspace-inspection.js';
 import { runAgentLoop, type AgentEvent, type AgentLoopOptions } from './agent-loop.js';
 import { runAdaptiveOrchestration } from './multi-agent-orchestrator.js';
@@ -177,7 +177,7 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
     options.onEvent({ type: 'done', fullText: answerText });
     return;
   }
-  if (fileTools.length || isDiagramRequest(options.message || '')) {
+  if (fileTools.length || isDiagramRequest(options.message || '') || isStudyRoadmapRequest(options.message || '')) {
     options.onEvent({ type: 'error', message: failure || 'The requested file could not be completed. Please retry; no image was substituted.' });
     return;
   }

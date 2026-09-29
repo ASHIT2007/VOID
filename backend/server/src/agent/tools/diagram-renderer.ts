@@ -1,5 +1,6 @@
 import { registerTool, ToolHandler, ToolResult } from '../tool-registry.js';
 import { normalizeMermaid } from '@void/shared/diagram-contract.mjs';
+import { validateDiagramSyntax } from '../diagram-validation.js';
 
 export function registerDiagramTools(): void {
   const handler: ToolHandler = async (args) => {
@@ -7,6 +8,8 @@ export function registerDiagramTools(): void {
     const title = args.title as string | undefined;
     
     if (!code) return { content: 'Provide a complete Mermaid diagram with a supported header and actual nodes. No configuration directives, HTML, links or click actions.', error: 'invalid_diagram' };
+    const syntaxError = await validateDiagramSyntax(code);
+    if (syntaxError) return { content: `Correct this Mermaid syntax and retry: ${syntaxError}`, error: 'invalid_diagram' };
 
     let content = '';
     if (title) {

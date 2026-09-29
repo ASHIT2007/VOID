@@ -42,6 +42,23 @@ describe('semantic image intent and grounding', () => {
     expect(mocks.search.mock.calls[0][0].query).toBe('Snow leopard');
     expect(events.some(event => event.type === 'media')).toBe(true);
   });
+  it('allows an implicit character profile with a misspelled name and searches the canonical entity', async () => {
+    classify({ should_search: true, category: 'concrete_visual_entity', visual_subject: 'Satoru Gojo', reason: 'A reference image helps identify the character.' });
+    mocks.search.mockResolvedValue({ content: 'Character reference', images: [{ ...image,
+      url: 'https://static.wikia.nocookie.net/jujutsu-kaisen/images/Satoru_Gojo.jpg',
+      title: 'Satoru Gojo character portrait', sourceUrl: 'https://jujutsu-kaisen.fandom.com/wiki/Satoru_Gojo', sourceDomain: 'jujutsu-kaisen.fandom.com' }] });
+    const result = await runMediaWorker({ message: 'tell me about saturo gojo', responseText: 'Satoru Gojo is a sorcerer in Jujutsu Kaisen.', mode: 'normal', onEvent: () => {} }, () => {});
+    expect(result).toHaveLength(1);
+    expect(mocks.search.mock.calls[0][0].query).toBe('Satoru Gojo');
+    expect(mocks.loop.mock.calls[0][0].systemContext).toContain('does NOT require the words image/photo');
+  });
+  it('reports malformed model output as a failed relevance check rather than an intentional omission', async () => {
+    classify('Here is a character biography instead of JSON.');
+    const events: AgentEvent[] = [];
+    await runMediaWorker({ message: 'tell me about saturo gojo', responseText: 'Satoru Gojo is a sorcerer.', mode: 'normal', onEvent: () => {} }, event => events.push(event));
+    expect(events.at(-1)).toMatchObject({ type: 'media_status', status: 'failed', reason: expect.stringContaining('invalid decision') });
+    expect(mocks.search).not.toHaveBeenCalled();
+  });
   it('omits on classifier error, missing fields, prose or ambiguous subject', async () => {
     for (const text of ['search for photos', '{}', JSON.stringify({ ...allow, visual_subject: 'your name' }), JSON.stringify({ ...allow, category: 'meta_assistant' })]) {
       classify(text);

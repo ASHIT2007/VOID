@@ -1,6 +1,6 @@
 import { assessTask, effortBudget } from './effort-policy.js';
 import { presentationDelivery, requestedFileTools } from '@void/shared/file-intent.mjs';
-import { isDiagramRequest, workspaceInspectionTools } from '@void/shared/chat-intent.mjs';
+import { isDiagramRequest, isStudyRoadmapRequest, workspaceInspectionTools } from '@void/shared/chat-intent.mjs';
 export type AgentRole =
   | 'general'
   | 'researcher'
@@ -106,7 +106,7 @@ export function createExecutionPlan(input: TaskPlanningInput): AgentExecutionPla
     .replace(/\s*\[SYSTEM DIRECTIVE:[\s\S]*?\]\s*/gi, ' ')
     .trim();
   const assessment = assessTask(message, input.attachmentCount);
-  if (isDiagramRequest(message) || workspaceInspectionTools(message).length) {
+  if (isDiagramRequest(message) || isStudyRoadmapRequest(message) || workspaceInspectionTools(message).length) {
     return { intent: 'simple', agents: [makeAgent('general', 0)] };
   }
   const cap = Math.max(1, Math.min(input.maxAgents ?? 4, effortBudget(input.reasoningEffort, assessment.simple).maxSpecialists));

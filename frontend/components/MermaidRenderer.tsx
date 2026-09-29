@@ -16,10 +16,10 @@ export default function MermaidRenderer({ chart, theme = 'dark' }: { chart?: str
   const code = normalizeMermaid(chart);
   useEffect(() => {
     let cancelled = false;
-    setSvg(''); setError(''); setZoom(1);
-    if (!code) { setError('This diagram is incomplete or contains unsupported actions. Ask VOID to regenerate it with valid Mermaid syntax.'); return; }
     renderQueue = renderQueue.catch(() => {}).then(async () => {
       if (cancelled) return;
+      setSvg(''); setError(''); setZoom(1);
+      if (!code) { setError('This diagram is incomplete or contains unsupported actions. Ask VOID to regenerate it with valid Mermaid syntax.'); return; }
       try {
         const mermaid = (await import('mermaid')).default;
         mermaid.initialize(mermaidConfig(theme));
@@ -68,9 +68,9 @@ export default function MermaidRenderer({ chart, theme = 'dark' }: { chart?: str
         <button disabled={!svg} aria-label="Download diagram as SVG" className="rounded-lg p-2 transition hover:bg-black/5 active:scale-95 disabled:opacity-40 dark:hover:bg-white/10" onClick={download}><Download size={14} /></button>
       </div>
     </div>
-    <div className="min-h-32 overflow-x-auto py-2">
+    <div tabIndex={0} aria-label="Scrollable diagram" className="min-h-32 overflow-auto py-2 focus-visible:outline focus-visible:outline-neutral-500">
       {error ? <div role="alert" className="space-y-3 text-sm text-neutral-600 dark:text-neutral-300"><p>{error}</p><button className="rounded border border-neutral-500 px-3 py-1.5" onClick={() => setRetry(value => value + 1)}>Retry rendering</button></div>
-        : svg ? <div className="void-mermaid mx-auto transition-[width] duration-150 motion-reduce:transition-none [&_svg]:block [&_svg]:h-auto [&_svg]:w-full" style={{ width: `min(${zoom * 100}%, ${naturalWidth * zoom}px)` }} dangerouslySetInnerHTML={{ __html: svg }} />
+        : svg ? <div className="void-mermaid mx-auto transition-[width] duration-150 motion-reduce:transition-none [&_svg]:block [&_svg]:h-auto [&_svg]:w-full" style={{ width: `${naturalWidth * zoom}px`, maxWidth: 'none' }} dangerouslySetInnerHTML={{ __html: svg }} />
           : <p role="status" className="text-sm text-neutral-400">Rendering diagram…</p>}
     </div>
     <details className="mt-2 py-2 text-xs text-neutral-500"><summary className="flex cursor-pointer items-center gap-2 transition hover:text-neutral-900 dark:hover:text-neutral-200"><ChevronDown size={12} />Diagram source</summary><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap">{chart}</pre></details>

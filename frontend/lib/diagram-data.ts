@@ -1,6 +1,7 @@
-const label = (value: unknown) => String(value ?? '').replace(/[&<>"\n\r]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\n': ' ', '\r': ' ' }[character]!)).slice(0, 200);
+import { compactMindmap } from '@void/shared/diagram-contract.mjs';
+const label = (value: unknown) => String(value ?? '').replace(/[&<>"\n\r]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\n': ' ', '\r': ' ' }[character]!)).slice(0, 80);
 export function mindMapToMermaid(data: { title: string; categories: Array<{ name: string; children: string[] }> }) {
-  return `mindmap\n  root["${label(data.title)}"]\n${data.categories.filter(Boolean).slice(0, 40).map((category, index) => `    branch${index}["${label(category.name)}"]\n${(Array.isArray(category.children) ? category.children : []).slice(0, 40).map((child, childIndex) => `      topic${index}_${childIndex}["${label(child)}"]`).join('\n')}`).join('\n')}`;
+  return compactMindmap(`mindmap\n  root["${label(data.title)}"]\n${data.categories.filter(Boolean).slice(0, 6).map((category, index) => `    branch${index}["${label(category.name)}"]\n${(Array.isArray(category.children) ? category.children : []).slice(0, 2).map((child, childIndex) => `      topic${index}_${childIndex}["${label(child)}"]`).join('\n')}`).join('\n')}`);
 }
 export function graphToMermaid(data: { directed?: boolean; nodes: Array<{ id: string; label?: string }>; edges: Array<{ from: string; to: string; label?: string }> }) {
   const safeNodes = data.nodes.filter(node => node && typeof node.id === 'string').slice(0, 200);

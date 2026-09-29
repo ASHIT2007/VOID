@@ -4,7 +4,7 @@ export type ProgressLog = { action: string; query: string; kind?: string; state?
 
 export function progressLogForEvent(event: Record<string, unknown>): ProgressLog {
   if (event.type === 'media_status') {
-    return { action: String(event.label || 'Checking images'), query: '', kind: 'media', state: String(event.status || 'active') };
+    return { action: String(event.label || 'Checking images'), query: progressTarget(event.reason || '', 240), kind: 'media', state: String(event.status || 'active') };
   }
   return { action: String(event.operation || event.action || event.label || 'Reviewing your request'),
     query: progressTarget(event.query || event.target), kind: String(event.kind || (event.operation || event.action ? 'task' : 'agent')),

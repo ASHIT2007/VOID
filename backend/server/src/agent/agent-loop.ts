@@ -1,6 +1,6 @@
 import type { ChatMessage, ChatToolCall, ChatToolDefinition } from '@void/shared/types.js';
 import { currentByokContext } from '../ai/byok-context.js';
-import { isDiagramRequest } from '@void/shared/chat-intent.mjs';
+import { DIAGRAM_GENERATION_DIRECTIVE, diagramAnswer } from '@void/shared/diagram-contract.mjs';
 import { recordByokOutcome } from '../ai/byok-health.js';
 import type { ToolImage, ToolResult } from './tool-registry.js';
 import { routeRequest, recordKeySuccess, recordKeyUnavailable, recordModelUnavailable, recordRateLimitHit, recordSuccess } from '../services/router.js';
@@ -401,6 +401,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
     const fileTools = options.internalTask ? [] : requestedFileTools(options.message || '');
     const presentationPreview = !options.internalTask && presentationDelivery(options.message || '') === 'preview';
     const generatedFiles = new Map<string, string>();
+    const generatedDiagrams = new Map<string, string>();
     let fileRepair = false;
     const questionSet = isQuestionSetRequest(options.message || '');
     const expectedQuestionLabels = questionSet
@@ -527,7 +528,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
           max_tokens: maxOutputTokens,
           reasoning_effort: reasoningEffort,
           signal: attemptController.signal,
-          temperature: currentByokContext()?.mode === 'CREATIVE' || currentByokContext()?.taskType === 'creative'
+          temperature: options.internalTask === 'media_relevance' ? 0 : currentByokContext()?.mode === 'CREATIVE' || currentByokContext()?.taskType === 'creative'
             ? 0.8 : reasoningEffort === 'low' ? 0.25 : reasoningEffort === 'high' ? 0.3 : 0.35,
         };
         if (useTools && schemas.length > 0) {
@@ -544,6 +545,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
             ? [{ role: 'system', content: options.systemContext }]
             : [];
           if (!options.internalTask) supplementalSystemMessages.push(toolInstructions(executionSchemas, useTools));
+          if (!options.internalTask && !options.isVoice && /\b(?:code|implement|program|algorithm|function)\b/i.test(options.message || '')) {
+            supplementalSystemMessages.push({ role: 'system', content: DIAGRAM_GENERATION_DIRECTIVE });
+          }
           if (presentationPreview) supplementalSystemMessages.push({ role: 'system', content: 'Presentation delivery for this turn: use the presentation-generation skill to return a complete editable preview in one gamma-presentation JSON code block. PPT, slides and presentation requests default to this preview. A requested preview takes precedence even when PowerPoint, .pptx or download is also mentioned. Do not call generate_presentation or create a downloadable PowerPoint. Preserve the requested topic, slide coverage and design.' });
           if (options.isVoice) supplementalSystemMessages.push({ role: 'system', content: VOICE_RESPONSE_POLICY });
           if (!options.internalTask && (requireFinalAnswer || iterations >= maxIterations)) supplementalSystemMessages.push({
@@ -779,6 +783,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
         if (missingFiles.length && /\b(?:created|generated|ready|attached|download)\b/i.test(fullText) && !/\b(?:cannot|can't|couldn't|failed|missing|need|provide|unable)\b/i.test(fullText)) {
           throw new Error('The connected model did not create the requested file. Please retry; no download is available yet.');
         }
+        if (generatedDiagrams.size) {
+          const writtenText = fullText;
+          for (const diagram of generatedDiagrams.values()) {
+            const fence = diagramAnswer(diagram)?.match(/```mermaid\n[\s\S]*?```/)?.[0];
+            if (fence && !fullText.includes(fence)) fullText += `\n\n${fence}`;
+          }
+          // Include completed tool visuals even if the writer only explained them.
+          if (fullText !== writtenText) onEvent({ type: 'text_delta', content: fullText.slice(writtenText.length) });
+        }
         assembledAnswerText += fullText;
         const continuationLimit = reasoningEffort === 'high' ? 3 : reasoningEffort === 'medium' ? 2 : 1;
         const answeredLabels = expectedQuestionLabels.length > 1 ? new Set(numberedQuestionLabels(assembledAnswerText)) : new Set<string>();
@@ -900,8 +913,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
             content: result.content,
             error: result.error,
           });
-          if (tool.name === 'render_diagram' && !result.error && isDiagramRequest(options.message || '') && !fileTools.length) {
+          if (tool.name === 'render_diagram' && !result.error && !fileTools.length) {
             completedDiagrams.push(result.content);
+            generatedDiagrams.set(String(args.code), result.content);
           }
 
           if (result.sources) {
@@ -925,14 +939,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
           onEvent({ type: 'tool_result', callId: tc.id, content: '', error: errMsg });
         }
       }
-      // A response may contain a flowchart and a mind map. Finish all requested
-      // render calls before returning their visuals without an extra model rewrite.
+      // Tool visuals are evidence for the writer, not a replacement for the answer.
       if (completedDiagrams.length === toolCalls.length && completedDiagrams.length > 0) {
-        const content = completedDiagrams.join('\n\n');
-        onEvent({ type: 'response_reset' });
-        onEvent({ type: 'text_delta', content });
-        onEvent({ type: 'done', fullText: content });
-        return;
+        requireFinalAnswer = true;
+        addMessage(session.id, { role: 'user', content: 'The diagrams have been completed. Now give the full requested written explanation, study guidance or working code alongside the completed Mermaid blocks. Do not call render_diagram again. Keep the verified diagram structure unchanged.' });
       }
       if (fileTools.length && fileTools.every(name => generatedFiles.has(name))) {
         const brief = fileTools.map(name => generatedFiles.get(name)).join('\n\n');

@@ -16,7 +16,7 @@ import { toolProgress, progressTarget } from '@void/shared/task-progress.mjs';
 import { isNativeChartRequest, chartAnswer, chartFallback } from '@/lib/chart-data';
 import { CHART_GENERATION_DIRECTIVE, isSubjectiveChartRequest, subjectiveChartInstruction } from '@/lib/chart-generation';
 import { DIAGRAM_GENERATION_DIRECTIVE, diagramAnswer } from '@void/shared/diagram-contract.mjs';
-import { isDiagramRequest, workspaceInspectionTools } from '@void/shared/chat-intent.mjs';
+import { isDiagramRequest, isStudyRoadmapRequest, workspaceInspectionTools } from '@void/shared/chat-intent.mjs';
 import { extractToolProtocol, requestsToolExample } from '@void/shared/tool-protocol.mjs';
 import { presentationDelivery, requestedFileTools, fileGenerationDirective } from '@void/shared/file-intent.mjs';
 import { loadVoiceConfig } from '@/lib/ai/voice-server';
@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
         const reportArtifactRequest = !fileTools.length && /\b(?:make|create|generate|write|prepare|build|draft|produce|compose|want|need)\b[\s\S]*\b(?:report|research report|executive report|document|white paper|briefing document)\b/i.test(latestMessage);
         const webArtifactRequest = isWebArtifactCreationRequest(latestMessage);
         const chartRequest = !fileTools.length && isNativeChartRequest(latestMessage);
-        const diagramRequest = !fileTools.length && isDiagramRequest(latestMessage);
+        const diagramRequest = !isVoice && !fileTools.length && (isDiagramRequest(latestMessage) || isStudyRoadmapRequest(latestMessage));
         const bufferedArtifactRequest = presentationRequest || chartRequest || diagramRequest || fileTools.length > 0;
         const conversationContext = isVoice
           ? JSON.stringify(compactVoiceHistory((Array.isArray(messages) ? messages : []).slice(0, -1)))

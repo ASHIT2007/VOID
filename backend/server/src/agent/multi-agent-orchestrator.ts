@@ -1,8 +1,9 @@
 import crypto from 'crypto';
 import { availableChatRouteCount, currentByokContext, withByokModel } from '../ai/byok-context.js';
 import type { ExecutionConfig } from '@void/shared/execution-config.mjs';
-import { isDiagramRequest } from '@void/shared/chat-intent.mjs';
+import { isDiagramRequest, isStudyRoadmapRequest, requestedDiagramKind } from '@void/shared/chat-intent.mjs';
 import { diagramAnswer, DIAGRAM_GENERATION_DIRECTIVE } from '@void/shared/diagram-contract.mjs';
+import { validateDiagramSyntax } from './diagram-validation.js';
 import { requestedFileTools } from '@void/shared/file-intent.mjs';
 import { toolProgress } from '@void/shared/task-progress.mjs';
 import { Script } from 'node:vm';
@@ -482,14 +483,17 @@ The prior web draft was rejected because it was partial, invalid, too thin, or n
 }
 
 async function runTextOrchestration(options: AdaptiveOrchestrationOptions): Promise<void> {
-  if (isDiagramRequest(options.message || '') && !requestedFileTools(options.message || '').length) {
+  if ((isDiagramRequest(options.message || '') || isStudyRoadmapRequest(options.message || '')) && !options.isVoice && !requestedFileTools(options.message || '').length) {
     // Preserve structured diagrams end to end; worker report recovery strips fences and indentation.
+    let repairReason = '';
+    const kind = requestedDiagramKind(options.message || '');
+    const both = /\b(?:mermaid(?:\s+diagram)?|flow\s*chart)\b[\s\S]*\b(?:and|also)\b[\s\S]*\bmind[ -]?map\b|\bmind[ -]?map\b[\s\S]*\b(?:and|also)\b[\s\S]*\b(?:mermaid(?:\s+diagram)?|flow\s*chart)\b/i.test(options.message || '') && !/\b(?:not|no|without)\b/i.test(options.message || '');
     for (let attempt = 0; attempt < 2; attempt++) {
       let draft = '', rendered = '', failure = '';
       options.onEvent({ type: 'progress', action: attempt ? 'Checking diagram structure' : 'Building your diagram' });
       await runAgentLoop({ ...options, mode: 'normal', searchMode: 'off', allowedTools: ['render_diagram'],
         sessionId: attempt ? `diagram-repair-${crypto.randomUUID()}` : options.sessionId,
-        systemContext: `${options.systemContext || ''}\n${DIAGRAM_GENERATION_DIRECTIVE}\nThis is a diagram task, not a presentation or research report. Preserve line breaks and indentation. ${attempt ? 'The previous response did not contain a complete diagram. Return the requested diagram now in one fenced mermaid block.' : ''}`,
+        systemContext: `${options.systemContext || ''}\n${DIAGRAM_GENERATION_DIRECTIVE}\nThis is a written answer with supporting diagrams, not a presentation or research report. Preserve line breaks and indentation. ${kind && !both ? `The requested diagram type is ${kind}. Use that type, not a different one.` : ''} ${attempt ? `Repair the previous response: ${repairReason}. Return the complete written explanation with the corrected Mermaid blocks.` : ''}`,
         onEvent: event => {
           if (event.type === 'text_delta') draft += event.content;
           else if (event.type === 'response_reset') draft = '';
@@ -499,9 +503,16 @@ async function runTextOrchestration(options: AdaptiveOrchestrationOptions): Prom
         },
       });
       if (options.signal?.aborted) return;
-        const answer = diagramAnswer(draft) || rendered;
+      const answer = diagramAnswer(draft) || rendered;
+      const blocks = answer ? [...answer.matchAll(/```mermaid\n([\s\S]*?)```/g)] : [];
+      const prose = answer?.replace(/```[\s\S]*?```/g, '').replace(/[#*\s]/g, '') || '';
+      const wrongType = kind && !both && blocks.some(block => kind === 'mindmap' ? !/^mindmap\b/i.test(block[1]) : !/^(?:flowchart|graph)\b/i.test(block[1]));
+      const missingType = both && (!blocks.some(block => /^mindmap\b/i.test(block[1])) || !blocks.some(block => /^(?:flowchart|graph)\b/i.test(block[1])));
+      let syntaxError = '';
+      for (const block of blocks) { syntaxError = await validateDiagramSyntax(block[1]) || ''; if (syntaxError) break; }
+      repairReason = !answer ? 'No complete diagram was returned' : wrongType ? `Use ${kind}, as requested` : missingType ? 'Include both the requested flowchart and mind map' : syntaxError || (prose.length < 30 ? 'Include a useful written explanation, not just diagrams' : '');
       const clarification = !failure && /\?\s*$/.test(draft.trim()) && /\b(?:which|what)\b.{0,60}\b(?:topic|subject|process)\b/i.test(draft) && !/```|gamma-presentation|-->|mindmap\s*\n/.test(draft);
-      if (answer || clarification) {
+      if (answer && !repairReason || clarification) {
         const content = answer || draft.trim();
         options.onEvent({ type: 'text_delta', content }); options.onEvent({ type: 'done', fullText: content }); return;
       }
@@ -751,7 +762,7 @@ export async function runAdaptiveOrchestration(options: AdaptiveOrchestrationOpt
   if (!done) return;
   options.onAnswerReady?.(answer);
   if (!failed && answer.trim() && !options.signal?.aborted && !options.isVoice
-    && !isDiagramRequest(options.message || '') && !requestedFileTools(options.message || '').length
+    && !isDiagramRequest(options.message || '') && !isStudyRoadmapRequest(options.message || '') && !requestedFileTools(options.message || '').length
     && !shouldGroundToAttachments(options.message || '', options.attachments)
     && createExecutionPlan({ message: options.message || '', mode: options.mode, reasoningEffort: options.reasoningEffort || 'medium', maxAgents: 1 }).intent !== 'artifact') {
     try {

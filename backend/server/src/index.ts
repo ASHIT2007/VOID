@@ -3,6 +3,7 @@ import './env.js';
 import { createApp } from './app.js';
 import { initEncryptionKey } from './lib/crypto.js';
 import { attachVoiceWebSocket } from './realtime/voice-socket.js';
+import { warmDiagramParser } from './agent/diagram-validation.js';
 
 const PORT = process.env.PORT ?? 3001;
 // Native hosting is private by default; containers explicitly set HOST=0.0.0.0.
@@ -11,6 +12,7 @@ const HOST = process.env.BACKEND_HOST ?? process.env.HOST ?? '127.0.0.1';
 async function main() {
   // BYOK credentials live in Supabase; startup must not create a legacy key pool.
   initEncryptionKey();
+  warmDiagramParser();
   const app = createApp();
 
   const onReady = (host: string) => () => {

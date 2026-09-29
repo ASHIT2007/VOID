@@ -115,7 +115,17 @@ export default function ExecutionSettings({ view, config, models, providers, sav
           <section aria-label="Orchestration flow" className={`${panel} overflow-hidden`}>
             <div className="flex items-center justify-between px-5 pt-4 text-[10px] text-neutral-500"><Workflow size={14} aria-hidden="true" /><span>{dirty ? 'Draft' : ''}</span></div>
             <svg viewBox={nodes.length === 1 ? '0 0 480 260' : '0 0 480 420'} role="img" aria-label={nodes.map(node => `${node.name}: ${label(node.modelId)}`).join(' → ')} className="mx-auto block w-full max-w-[480px]">
-              <defs><marker id={`${flowId}-arrow`} markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto"><path d="M0 0L5 2.5L0 5" fill="#737373" /></marker></defs>
+              <defs>
+                <marker id={`${flowId}-arrow`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0L6 3L0 6" fill="#737373" /></marker>
+                <marker id={`${flowId}-glow-arrow`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0L6 3L0 6" fill="#f5f5f5" /></marker>
+                <filter id={`${flowId}-arrow-glow`} x="-20%" y="-20%" width="140%" height="140%" colorInterpolationFilters="sRGB">
+                  <feGaussianBlur stdDeviation="2" />
+                  <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
+                </filter>
+                <filter id={`${flowId}-shimmer-soften`} filterUnits="userSpaceOnUse" x="0" y="0" width="480" height="420">
+                  <feGaussianBlur stdDeviation="3" />
+                </filter>
+              </defs>
               {nodes.length > 1 && <>
                 <circle cx="240" cy="205" r="151" fill="none" stroke="#ffffff" strokeOpacity=".035" strokeWidth="1" />
                 <text x="240" y="211" textAnchor="middle" fill="#616161" fontSize="22" fontWeight="300">{String(stages.length + 1).padStart(2, '0')}</text>
@@ -124,7 +134,23 @@ export default function ExecutionSettings({ view, config, models, providers, sav
                   const endAngle = -Math.PI / 2 + (index + 1) * Math.PI * 2 / nodes.length - .29;
                   const start = point(startAngle), end = point(endAngle);
                   const path = `M${start.x},${start.y} A151,151 0 0 1 ${end.x},${end.y}`;
-                  return <g key={node.id}><path d={path} fill="none" stroke="#454545" strokeWidth="1.25" markerEnd={`url(#${flowId}-arrow)`} />{!reduced && <circle r="2" fill="#bdbdbd"><animateMotion dur="3.5s" begin={`${index * .4}s`} repeatCount="indefinite" path={path} /></circle>}</g>;
+                  return <g key={node.id}>
+                    <path d={path} fill="none" stroke="#454545" strokeWidth="1.25" markerEnd={`url(#${flowId}-arrow)`} />
+                    {!reduced && <>
+                      <defs>
+                        <mask id={`${flowId}-shimmer-${index}`} maskUnits="userSpaceOnUse" x="0" y="0" width="480" height="420">
+                          {/* A broad, feathered reveal follows the curve itself;
+                              the arrow never moves or sprouts a floating dot. */}
+                          <path d={path} pathLength="100" fill="none" stroke="white" strokeWidth="18" strokeLinecap="round" strokeDasharray="46 154" strokeDashoffset="48" filter={`url(#${flowId}-shimmer-soften)`}>
+                            <animate attributeName="stroke-dashoffset" values="48;-104" dur="2.8s" begin={`${index * 0.55}s`} repeatCount="indefinite" />
+                          </path>
+                        </mask>
+                      </defs>
+                      <g mask={`url(#${flowId}-shimmer-${index})`}>
+                        <path d={path} fill="none" stroke="#f5f5f5" strokeWidth="1.7" markerEnd={`url(#${flowId}-glow-arrow)`} filter={`url(#${flowId}-arrow-glow)`} />
+                      </g>
+                    </>}
+                  </g>;
                 })}
               </>}
               {nodes.map((node, index) => {

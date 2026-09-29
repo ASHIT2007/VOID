@@ -89,6 +89,7 @@ import { createCompletionChime, type CompletionChimeController } from "@/lib/com
 import { useTheme } from "./ThemeProvider";
 import FilePreviewModal from "./FilePreviewModal";
 import VoiceAgent from "./VoiceAgent";
+import VoiceWaveIcon from "./VoiceWaveIcon";
 import ArtifactCanvas, { Artifact } from "./ArtifactCanvas";
 import MindMapViewer, { parseMindMapData } from "./MindMapViewer";
 import ChartViewer, { parseChartData } from "./ChartViewer";
@@ -6323,33 +6324,15 @@ return (
                 </div>
                 <div className="flex items-center gap-2">
                   {thinkingEffortSelectorJsx}
-                  <motion.button
+                  <button
                     type="button"
-                    whileHover={{ scale: 1.035 }}
-                    whileTap={{ scale: 0.92 }}
-                    transition={{ type: "spring", stiffness: 360, damping: 26, mass: 0.55 }}
                     onClick={() => setIsVoiceModeActive(true)}
-                    className="relative flex h-12 w-12 items-center justify-center rounded-full border border-gray-900 bg-gray-900 text-white shadow-none transition-colors duration-200 hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50 dark:border-white/15 dark:bg-white dark:text-black dark:hover:bg-gray-100"
+                    className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black shadow-none hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50"
                     title="Start Void voice"
                     aria-label="Start Void voice"
                   >
-                    <span className="flex h-6 items-center gap-[3px]" aria-hidden="true">
-                      {[10, 16, 22, 16, 10].map((height, index) => (
-                        <motion.span
-                          key={`${height}-${index}`}
-                          className="w-[2.5px] origin-center rounded-full bg-current"
-                          style={{ height }}
-                          animate={{ scaleY: [0.72, 1, 0.84, 0.72], y: [0, -0.35, 0.25, 0] }}
-                          transition={{
-                            duration: 1.65 + index * 0.08,
-                            delay: -index * 0.16,
-                            repeat: Infinity,
-                            ease: "easeInOut",
-                          }}
-                        />
-                      ))}
-                    </span>
-                  </motion.button>
+                    <VoiceWaveIcon />
+                  </button>
                   <AnimatePresence>
                     {(input.trim() || attachments.length > 0 || isLoading) && (
                       <motion.button

@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { MicOff } from "lucide-react";
+import VoiceWaveIcon from "./VoiceWaveIcon";
 import VoidVisualizer, { VoiceVisualState } from "./VoidVisualizer";
 import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from '@/lib/voice-config';
 import { startNativeVoice, type NativeSession, type NativeVoiceHandle } from '@/lib/voice-native';
@@ -1606,45 +1607,19 @@ export default function VoiceAgent({
     <>
       {showVisualizer && errorMessage && <p role="status" className="fixed right-4 top-4 z-[70] max-w-[min(300px,calc(100vw-2rem))] rounded-xl border border-gray-200 bg-white px-4 py-3 text-xs leading-relaxed text-gray-600 shadow-lg dark:border-white/10 dark:bg-[#202020] dark:text-gray-300">{errorMessage}</p>}
       <div className="relative flex items-center">
-        <motion.button
+        <button
           type="button"
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.96 }}
-          transition={{ type: "spring", stiffness: 320, damping: 28, mass: 0.6 }}
           onClick={state === 'error' ? openVoiceMode : showVisualizer ? toggleMute : openVoiceMode}
-          className={`relative flex h-11 w-11 items-center justify-center rounded-full border shadow-none transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/30 ${
-            showVisualizer
-              ? muted
-                ? "border-black/10 bg-black/[0.035] text-gray-400 dark:border-white/10 dark:bg-white/[0.045] dark:text-gray-500"
-                : "border-black/10 bg-black/[0.055] text-gray-800 hover:bg-black/[0.08] dark:border-white/10 dark:bg-white/[0.075] dark:text-gray-100 dark:hover:bg-white/[0.11]"
-              : "border-black/10 bg-black/[0.035] text-gray-700 hover:bg-black/[0.07] dark:border-white/10 dark:bg-white/[0.055] dark:text-gray-200 dark:hover:bg-white/[0.09]"
-          }`}
+          className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black shadow-none hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50"
           title={state === 'error' ? 'Retry voice connection' : !showVisualizer ? "Start Void voice" : primaryLabel}
           aria-label={state === 'error' ? 'Retry voice connection' : !showVisualizer ? "Start Void voice" : primaryLabel}
         >
           {showVisualizer && muted ? (
             <MicOff className="h-5 w-5" />
           ) : (
-            <span className="flex h-5 items-center gap-[2.5px]" aria-hidden="true">
-              {[7, 11, 17, 11, 7].map((height, index) => (
-                <motion.span
-                  key={`${height}-${index}`}
-                  className="w-0.5 origin-center rounded-full bg-current"
-                  style={{ height }}
-                  animate={showVisualizer && !muted
-                    ? { scaleY: [0.68, 0.94, 0.78, 1, 0.68] }
-                    : { scaleY: 1, y: 0 }}
-                  transition={{
-                    duration: 1.35 + index * 0.08,
-                    delay: -index * 0.16,
-                    repeat: showVisualizer && !muted ? Infinity : 0,
-                    ease: "easeInOut",
-                  }}
-                />
-              ))}
-            </span>
+            <VoiceWaveIcon />
           )}
-        </motion.button>
+        </button>
       </div>
 
       <AnimatePresence>

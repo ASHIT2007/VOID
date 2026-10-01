@@ -1,5 +1,5 @@
 import type { ChatMessage, ChatToolCall, ChatToolDefinition } from '@void/shared/types.js';
-import { currentByokContext } from '../ai/byok-context.js';
+import { byokConnectionId, currentByokContext } from '../ai/byok-context.js';
 import { DIAGRAM_GENERATION_DIRECTIVE, diagramAnswer } from '@void/shared/diagram-contract.mjs';
 import { recordByokOutcome } from '../ai/byok-health.js';
 import type { ToolImage, ToolResult } from './tool-registry.js';
@@ -665,7 +665,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
           recordSuccess(route.modelDbId);
           recordKeySuccess(route.keyId);
           const byok = currentByokContext();
-          if (byok) recordByokOutcome(byok.userId, platform, modelId, true, Date.now() - providerStartedAt);
+          if (byok) recordByokOutcome(byok.userId, platform, modelId, true, Date.now() - providerStartedAt, { connectionId: byokConnectionId(byok, keyId) });
           success = true;
           break;
         } catch (streamErr: any) {
@@ -679,7 +679,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
           }
           lastError = streamErr;
           const byok = currentByokContext();
-          if (byok) recordByokOutcome(byok.userId, platform, modelId, false, 0);
+          if (byok) recordByokOutcome(byok.userId, platform, modelId, false, 0, { connectionId: byokConnectionId(byok, keyId), error: streamErr });
           console.warn(`[AgentLoop] Model ${modelId} (${displayName}) error: ${streamErr.message}. Attempt ${attempt + 1}/${maxProviderAttempts}`);
           logDebug(`[AgentLoop] Model ${modelId} (${displayName}) failed: ${String(streamErr?.message || streamErr).replace(/\s+/g, ' ').slice(0, 500)}`);
           const skipId = `${platform}:${modelId}:${keyId}`;

@@ -456,7 +456,7 @@ export default function ArtifactCanvas({ artifact, onClose, onArtifactChange, th
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: 4, scale: 0.95 }}
                   transition={{ duration: 0.12 }}
-                  className="absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-[#1F1F23] rounded-xl shadow-xl border border-gray-200 dark:border-[#333338] py-1 z-50 overflow-hidden"
+                  className="void-menu absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-[#1F1F23] rounded-xl shadow-xl border border-gray-200 dark:border-[#333338] py-1 z-50 overflow-hidden"
                 >
                   <button
                     onClick={handleCopyCode}

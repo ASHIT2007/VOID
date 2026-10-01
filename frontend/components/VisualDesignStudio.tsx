@@ -1,5 +1,6 @@
 "use client";
 
+import VoidSelect from './ui/VoidSelect';
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   AlignCenter,
@@ -858,7 +859,7 @@ export default function VisualDesignStudio({ data: rawData, onClose, onChange, i
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.isContentEditable || target?.closest("input, textarea, select")) return;
+      if (target?.isContentEditable || target?.closest('input, textarea, select, [role="listbox"], [aria-haspopup="listbox"]')) return;
       const command = event.ctrlKey || event.metaKey;
       if (command && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -892,9 +893,9 @@ export default function VisualDesignStudio({ data: rawData, onClose, onChange, i
         <div className="min-w-0 flex-1"><h2 className="truncate text-[13px] font-semibold tracking-[-0.01em]">{data.title}</h2><p className="truncate text-[10px] capitalize text-white/40">{typeof data.format === "string" ? data.format.replace(/-/g, " ") : "presentation"} · Page {selectedIndex + 1} of {data.slides.length} · Quality {quality.score}</p></div>
         {!compactStudio && <div className="flex items-center gap-2">
           <Palette size={16} className="text-white/50" />
-          <select value={data.designPlan?.style} onChange={(event) => commitData((current) => withDesignStyle(current, event.target.value as DesignStyle))} className="h-8 rounded-md border border-white/10 bg-[#191a1c] px-2 text-xs outline-none transition-colors hover:border-white/20 focus:border-white/30">
+          <VoidSelect aria-label="Design style" value={data.designPlan?.style} onChange={(event) => commitData((current) => withDesignStyle(current, event.target.value as DesignStyle))} className="h-8 rounded-md border border-white/10 bg-[#191a1c] px-2 text-xs outline-none transition-colors hover:border-white/20 focus:border-white/30">
             {DESIGN_STYLES.map((style) => <option key={style.value} value={style.value}>{style.label}</option>)}
-          </select>
+          </VoidSelect>
         </div>}
         {!compactStudio && <div className="mx-1 h-5 w-px bg-white/10" />}
         {!compactStudio && <button onClick={() => commitData((current) => regenerateSlideLayout(current, slide.id))} className="grid h-8 w-8 place-items-center rounded-md text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white" title="Regenerate this layout"><LayoutTemplate size={16} /></button>}

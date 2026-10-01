@@ -63,6 +63,14 @@ function stableId(value: string): number {
   return -(parseInt(createHash('sha256').update(value).digest('hex').slice(0, 7), 16) + 1);
 }
 
+export function byokConnectionId(context: ByokContext, keyId: number): string | undefined {
+  return context.models.find(model => stableId(context.userId + model.connectionId) === keyId)?.connectionId;
+}
+
+export function byokModelOnCooldown(userId: string, model: ByokModel): boolean {
+  return isOnCooldown(model.providerId, model.modelId, stableId(userId + model.connectionId));
+}
+
 export const NON_CHAT_MODEL_PATTERN = /(?:^|[\/_-])(?:embed|embedding|rerank|moderation|guard|nemoguard|safety|whisper|tts|stt|asr|transcri|canary|calibration|ising|detector|deplot|parse|reward|evaluator|classifier|clip|ocr)(?:[\/_-]|$)|(?:bge|e5|gte)-/i;
 
 export function routeByokRequest(

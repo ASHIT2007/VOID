@@ -1,5 +1,6 @@
-import React, { useState } from "react";
-import { X, Sparkles, Layout, Palette, MessageSquare, Layers, Check, ChevronDown } from "lucide-react";
+import VoidSelect from './ui/VoidSelect';
+import { useState } from "react";
+import { X, Sparkles, Layout, Palette, MessageSquare, Layers, Check } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SlideTheme } from "@/types/presentation";
 
@@ -20,33 +21,7 @@ type StudioPreferenceModalProps = {
 
 
 function CustomSelect({ value, onChange, options }: { value: string, onChange: (val: string) => void, options: {value: string, label: string}[] }) {
-  const [isOpen, setIsOpen] = React.useState(false);
-  const selected = options.find(o => o.value === value) || options[0];
-  
-  return (
-    <div className="relative w-full">
-      <div 
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full bg-[#1A1A1E] border border-[#27272A] rounded-xl px-3 py-2 text-xs text-white cursor-pointer flex justify-between items-center"
-      >
-        <span>{selected.label}</span>
-        <ChevronDown size={14} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-      </div>
-      {isOpen && (
-        <div className="absolute z-50 top-full mt-1 w-full bg-[#1A1A1E] border border-[#27272A] rounded-xl overflow-hidden shadow-xl">
-          {options.map(opt => (
-            <div 
-              key={opt.value}
-              onClick={() => { onChange(opt.value); setIsOpen(false); }}
-              className={`px-3 py-2 text-xs cursor-pointer hover:bg-[#2A2A30] text-white ${value === opt.value ? 'bg-[#2A2A30]' : ''}`}
-            >
-              {opt.label}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  return <VoidSelect value={value} aria-label="Studio preference" onChange={event => onChange(event.target.value)} options={options} className="text-white" />;
 }
 
 export default function StudioPreferenceModal({
@@ -216,7 +191,7 @@ export default function StudioPreferenceModal({
                 </label>
                 <CustomSelect 
                   value={tone}
-                  onChange={(val) => setTone(val as any)}
+                  onChange={(val) => setTone(val as PreferenceOptions['tone'])}
                   options={[
                     { value: "academic", label: "Academic & Detailed" },
                     { value: "professional", label: "Professional & Executive" },

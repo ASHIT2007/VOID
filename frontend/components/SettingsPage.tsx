@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import NextImage from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Menu, Sliders, Network, Workflow, Route, User, Monitor, CheckCircle2, Save, Trash2, Download, LogOut, Upload, Sun, Moon, ChevronDown, ChevronRight, Lock } from "lucide-react";
@@ -8,6 +8,7 @@ import { useTheme } from "./ThemeProvider";
 import { supabase } from "@/lib/supabase";
 import { rememberLoginProfile } from "@/lib/login-profile";
 import ProviderSettings from './ProviderSettings';
+import VoidSelect from './ui/VoidSelect';
 
 import { ADMIN_EMAIL, getAccountPlan, isAdminEmail, PLAN_DETAILS } from "@/lib/plans";
 
@@ -45,98 +46,7 @@ interface SettingsPageProps {
 
 
 function CustomSelect({ value, onChange, options, isPro = true }: { value: string, onChange: (val: string) => void, options: SelectOption[], isPro?: boolean }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const selectRef = useRef<HTMLDivElement>(null);
-  const [menuLayout, setMenuLayout] = useState({ above: false, maxHeight: 240 });
-  useLayoutEffect(() => {
-    if (!isOpen || !selectRef.current) return;
-    const rect = selectRef.current.getBoundingClientRect();
-    const panel = selectRef.current.closest("[data-settings-scroll]")?.getBoundingClientRect();
-    const below = Math.min(window.innerHeight, panel?.bottom ?? window.innerHeight) - rect.bottom - 16;
-    const above = rect.top - Math.max(0, panel?.top ?? 0) - 16;
-    const openAbove = below < 200 && above > below;
-    setMenuLayout({ above: openAbove, maxHeight: Math.max(100, Math.min(240, openAbove ? above : below)) });
-  }, [isOpen]);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (selectRef.current && !selectRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const selectedOption = options.find(opt => opt.value === value) || options[0];
-
-  return (
-    <div className="relative" ref={selectRef} onKeyDown={(event) => {
-      if (event.key === "Escape") { setIsOpen(false); selectRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup]')?.focus(); }
-    }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setIsOpen(false); }}>
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={isOpen}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            setIsOpen(true);
-            requestAnimationFrame(() => (selectRef.current?.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]') || selectRef.current?.querySelector<HTMLButtonElement>('[role="option"]'))?.focus());
-          }
-        }}
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full bg-white dark:bg-[#1A1A1A] border border-gray-200 dark:border-[#333] hover:border-gray-300 dark:hover:border-[#444] text-gray-900 dark:text-white rounded-xl px-4 py-3 flex items-center justify-between cursor-pointer shadow-sm transition-all text-sm font-medium"
-      >
-        <span className="flex min-w-0 items-center gap-3">{selectedOption?.icon}<span className="truncate">{selectedOption?.title || selectedOption?.label}</span></span>
-        <ChevronDown size={16} className={`text-gray-500 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
-      </button>
-
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            role="listbox"
-            aria-label="Model options"
-            onKeyDown={(event) => {
-              const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]'));
-              const index = items.indexOf(document.activeElement as HTMLButtonElement);
-              const next = event.key === "ArrowDown" ? (index + 1) % items.length : event.key === "ArrowUp" ? (index - 1 + items.length) % items.length : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : -1;
-              if (next >= 0) { event.preventDefault(); items[next]?.focus(); }
-            }}
-            initial={{ opacity: 0, y: -5, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -5, scale: 0.98 }}
-            transition={{ duration: 0.15 }}
-            style={{ maxHeight: menuLayout.maxHeight }}
-            className={`absolute z-[100] ${menuLayout.above ? "bottom-full mb-2" : "top-full mt-2"} w-full bg-white dark:bg-[#1A1A1A] border border-gray-200 dark:border-[#333] rounded-xl shadow-xl overflow-hidden py-1 overflow-y-auto`}
-          >
-            {options.map((opt) => (
-              <button
-                type="button"
-                role="option"
-                aria-selected={value === opt.value}
-                key={opt.value}
-                onClick={() => { onChange(opt.value); setIsOpen(false); selectRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup]')?.focus(); }}
-                className={`w-full text-left px-4 py-2.5 text-sm cursor-pointer flex items-center justify-between transition-colors ${value === opt.value ? "bg-gray-50 dark:bg-[#2A2A2A] font-semibold" : "hover:bg-gray-50 dark:hover:bg-[#222]"}`}
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  {opt.icon}
-                  <div className="flex min-w-0 flex-col">
-                  <span className="text-gray-900 dark:text-white">{opt.title || opt.label}</span>
-                  {opt.desc && <span className="text-xs text-gray-500">{opt.desc}</span>}
-                </div>
-                </div>
-                {value === opt.value && <CheckCircle2 size={14} className="ml-2 shrink-0 text-gray-500" />}
-                {!isPro && opt.isPremium && (
-                  <Lock size={12} className="text-gray-400 shrink-0 ml-2" />
-                )}
-              </button>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
+  return <VoidSelect value={value} aria-label="Setting options" onChange={event => onChange(event.target.value)} className="text-sm" options={options.map(option => ({ value: option.value, label: option.title || option.label, description: option.desc, icon: option.icon || (!isPro && option.isPremium ? <Lock size={12} /> : undefined) }))} />;
 }
 
 export default function SettingsPage({ onClose, sessionUsage, onClearChats, initialTab = "providers" }: SettingsPageProps) {

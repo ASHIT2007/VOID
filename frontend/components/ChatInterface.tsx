@@ -5282,7 +5282,7 @@ export default function ChatInterface({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.96 }}
             transition={{ type: "spring", stiffness: 460, damping: 32, mass: 0.7 }}
-            className="absolute bottom-full left-0 z-[60] mb-3 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-gray-200 bg-white p-3.5 shadow-2xl sm:left-auto sm:right-0 dark:border-[#454545] dark:bg-[#303030]"
+            className="void-menu absolute bottom-full left-0 z-[60] mb-3 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-gray-200 bg-white p-3.5 shadow-2xl sm:left-auto sm:right-0 dark:border-[#454545] dark:bg-[#303030]"
             role="dialog"
             aria-label="Thinking effort"
           >
@@ -5303,10 +5303,13 @@ export default function ChatInterface({
             <div className="relative h-8 min-w-0">
               <div className="absolute inset-x-3 top-1/2 h-5 -translate-y-1/2">
                 <div className="absolute inset-0 overflow-hidden rounded-full bg-gray-200 dark:bg-[#4A4A4A]">
-                  {/* ThinkingEnergy paints the gravitational fill inside this track. */}
-
+                  <motion.div
+                    className={`absolute inset-y-0 left-0 rounded-full bg-white ${thinkingEffortIndex === 2 ? 'hidden motion-reduce:block' : ''}`}
+                    animate={{ width: thinkingStopPositions[thinkingEffortIndex] }}
+                    transition={{ duration: .18, ease: 'easeOut' }}
+                  />
                 </div>
-                <ThinkingEnergy level={thinkingEffortIndex} />
+                {thinkingEffortIndex === 2 && <ThinkingEnergy level={2} />}
                 <motion.div
                   className="pointer-events-none absolute top-1/2 z-20 h-6 w-6 rounded-full border border-gray-300 bg-white shadow-md dark:border-[#606060] dark:bg-[#F5F5F5]"
                   animate={{ left: thinkingStopPositions[thinkingEffortIndex], x: "-50%", y: "-50%" }}

@@ -1,4 +1,5 @@
 'use client';
+import VoidSelect from './ui/VoidSelect';
 import { useEffect, useId, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { AudioLines, ChevronDown, Check, Loader2 } from 'lucide-react';
@@ -21,7 +22,7 @@ export default function VoiceAgentSettings({ providers, models }: { providers: C
   const voices = config.ttsProvider === 'browser' ? browserVoices.map(voice => ({ id: voice.voiceURI, name: `${voice.name} · ${voice.lang}` }))
     : config.ttsProvider === 'openai' ? [...OPENAI_VOICES, 'fable', 'nova', 'onyx'].map(id => ({ id, name: id }))
     : models.filter(model => model.connection_id === config.ttsConnectionId && model.enabled && model.capabilities.voice).map(model => ({ id: model.model_id, name: model.display_name }));
-  const select = (label: string, value: string, options: Array<{ id: string; name: string }>, update: (value: string) => void, placeholder = 'Choose…') => <label className="block space-y-1.5 text-xs text-neutral-400"><span>{label}</span><select aria-label={label} className="w-full min-w-0 rounded-xl border border-white/10 bg-[#202020] px-3 py-2.5 text-sm text-white outline-none transition focus:border-white/40" value={value} onChange={event => update(event.target.value)}><option value="">{placeholder}</option>{options.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>;
+  const select = (label: string, value: string, options: Array<{ id: string; name: string }>, update: (value: string) => void, placeholder = 'Choose…') => <label className="block space-y-1.5 text-xs text-neutral-400"><span>{label}</span><VoidSelect aria-label={label} className="w-full min-w-0 rounded-xl border border-white/10 bg-[#202020] px-3 py-2.5 text-sm text-white outline-none transition focus:border-white/40" value={value} onChange={event => update(event.target.value)}><option value="">{placeholder}</option>{options.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</VoidSelect></label>;
   const connectionOptions = (provider: string) => connections(provider).map(item => ({ id: item.id, name: item.display_name }));
   const save = async () => { setBusy(true); setError(''); setSaved(false); try { const response = await fetch('/api/voice/settings', { method: 'PUT', headers: await headers(), body: JSON.stringify({ config }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error); setConfig(body.config); setSaved(true); } catch (err) { setError(err instanceof Error ? err.message : 'Could not save voice settings.'); } finally { setBusy(false); } };
   return <section aria-label="Voice Agent settings" className="rounded-2xl border border-white/10 bg-[#141414] p-4 sm:p-5">

@@ -36,7 +36,7 @@ describe('production deployment perimeter', () => {
     await new Promise<void>(resolve => server.on('listening', resolve));
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     try {
-      for (const route of ['voice-chat', 'transcribe', 'tts', 'agent/chat', 'ai/generate', 'chat', 'attachments']) {
+      for (const route of ['voice-chat', 'transcribe', 'tts', 'agent/chat', 'ai/generate', 'ai/health', 'ai/health/check', 'chat', 'attachments']) {
         expect((await fetch(`${base}/api/${route}`, { method: 'POST' })).status, route).toBe(401);
       }
       expect((await fetch(`${base}/api/ping`)).status).toBe(200);

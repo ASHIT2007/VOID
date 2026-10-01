@@ -1,5 +1,6 @@
 "use client";
 
+import VoidSelect from './ui/VoidSelect';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Brain, ChevronDown, Ellipsis, Plus, RefreshCw, SlidersHorizontal, Sparkles, Star, X, Zap } from 'lucide-react';
@@ -8,6 +9,8 @@ import ProviderLogo from './ProviderLogo';
 import ExecutionSettings from './ExecutionSettings';
 import { defaultExecutionConfig, type ExecutionConfig } from '@void/shared/execution-config.mjs';
 import VoiceAgentSettings from './VoiceAgentSettings';
+import ImageGenerationSettings from './ImageGenerationSettings';
+import ProviderSettingsSkeleton from './ProviderSettingsSkeleton';
 
 type Capability = {
   text?: boolean;
@@ -43,6 +46,8 @@ export type Model = {
   capabilities: Capability;
   enabled: boolean;
   priority: number;
+  runtime_status?: 'unknown' | 'checking' | 'healthy' | 'rate_limited' | 'unavailable';
+  runtime_checking?: boolean;
 };
 
 type Preferences = {
@@ -119,6 +124,8 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [runtimeHealth, setRuntimeHealth] = useState<Record<string, { status: Model['runtime_status'] }>>({});
+  const [checking, setChecking] = useState<Record<string, number>>({});
   const snapshotRef = useRef(snapshot);
   const queues = useRef(new Map<string, Promise<void>>());
   const revisions = useRef(new Map<string, number>());
@@ -152,6 +159,47 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
     }, 0);
     return () => clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (view !== 'orchestration' || !loaded) return;
+    const controller = new AbortController();
+    let pending = false;
+    const refresh = async () => {
+      if (document.hidden || pending) return;
+      pending = true;
+      try {
+        const response = await fetch('/api/ai/health', { headers: await authHeaders(), cache: 'no-store', signal: controller.signal });
+        if (response.ok) { const body = await response.json() as { health: Record<string, { status: Model['runtime_status'] }> }; if (!controller.signal.aborted) setRuntimeHealth(current => ({ ...current, ...Object.fromEntries(Object.entries(body.health).filter(([, status]) => status.status !== 'unknown')) })); }
+      } catch { /* Keep the last observed state when health telemetry is unavailable. */ }
+      finally { pending = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 10_000);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('providersUpdated', refresh);
+    return () => { controller.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', refresh); window.removeEventListener('providersUpdated', refresh); };
+  }, [view, loaded]);
+
+  const checkHealth = useCallback(async (ids: string[], signal: AbortSignal) => {
+    const queue = [...new Set(ids)];
+    let failed = false;
+    const headers = await authHeaders();
+    const worker = async () => {
+      while (queue.length && !signal.aborted) {
+        const id = queue.shift()!;
+        setChecking(current => ({ ...current, [id]: (current[id] || 0) + 1 }));
+        try {
+          const response = await fetch('/api/ai/health', { method: 'POST', headers, cache: 'no-store', signal, body: JSON.stringify({ modelIds: [id] }) });
+          if (!response.ok) throw new Error('Availability check failed');
+          const data = await response.json();
+          if (!signal.aborted) setRuntimeHealth(current => ({ ...current, ...data.health }));
+        } catch { if (!signal.aborted) failed = true; }
+        finally { setChecking(current => ({ ...current, [id]: Math.max(0, (current[id] || 0) - 1) })); }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (failed) throw new Error('Availability checks are unavailable. Retry to verify your models.');
+  }, []);
 
   // Auto-dismiss notices after 4 seconds
   useEffect(() => {
@@ -232,13 +280,12 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
     }, () => {
       snapshotRef.current = { ...snapshotRef.current, preferences: confirmed.current.get(task) as Preferences }; setSnapshot(snapshotRef.current);
     }, () => {
-      const next = { ...confirmed.current.get(task) as Preferences, ...changes };
       return request('/api/ai/preferences', 'PATCH', {
-        mode: next.default_mode,
-        modelId: next.preferred_model_id || null,
-        imageModelId: next.image_model_id || null,
-        voiceConnectionId: next.voice_connection_id || null,
-        fallbackEnabled: next.fallback_enabled !== false
+        ...(Object.hasOwn(changes, 'default_mode') ? { mode: changes.default_mode } : {}),
+        ...(Object.hasOwn(changes, 'preferred_model_id') ? { modelId: changes.preferred_model_id || null } : {}),
+        ...(Object.hasOwn(changes, 'image_model_id') ? { imageModelId: changes.image_model_id || null } : {}),
+        ...(Object.hasOwn(changes, 'voice_connection_id') ? { voiceConnectionId: changes.voice_connection_id || null } : {}),
+        ...(Object.hasOwn(changes, 'fallback_enabled') ? { fallbackEnabled: changes.fallback_enabled !== false } : {})
       });
     }, () => { confirmed.current.set(task, { ...confirmed.current.get(task) as Preferences, ...changes }); });
   }
@@ -296,16 +343,16 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
   );
   const chatModels = active.filter(model => model.capabilities.text && model.capabilities.streaming && snapshot.providers.find(provider => provider.id === model.connection_id)?.capability_usage?.chat !== false);
   const imageModels = active.filter(model => model.capabilities.imageGeneration && snapshot.providers.find(provider => provider.id === model.connection_id)?.capability_usage?.image !== false);
-  const selectedImage = imageModels.find(model => model.id === snapshot.preferences.image_model_id);
-  const imageConnectionId = selectedImage?.connection_id || '';
 
   const currentMode = snapshot.preferences.default_mode || 'AUTO';
+  if (!loaded && !loadError) return <ProviderSettingsSkeleton view={view} />;
+  if (!loaded) return <div role="alert" className="mx-auto flex max-w-2xl items-center justify-between gap-3 rounded-xl border border-white/10 p-4 text-xs text-neutral-300"><span>{loadError}</span><button disabled={loading} onClick={() => void load().catch(() => {})} aria-label="Retry loading settings" title="Retry" className="rounded-lg p-2 hover:bg-white/10"><RefreshCw size={16} /></button></div>;
   return (
     <>
     {loadError && <div role="alert" className="mx-auto mb-4 flex max-w-2xl items-center justify-between gap-3 rounded-xl border border-white/10 p-4 text-xs text-neutral-300"><span>{loadError}</span><button disabled={loading} onClick={() => void load().catch(() => {})} aria-label="Retry loading settings" title="Retry" className="rounded-lg p-2 hover:bg-white/10"><RefreshCw size={16} /></button></div>}
-    <div hidden={view === 'providers'} className="mx-auto max-w-2xl pb-8">{loaded ? <ExecutionSettings view={view === 'routing' ? 'routing' : 'orchestration'} config={execution} models={chatModels} providers={snapshot.providers} onConnect={() => { setIsAdding(true); onConnect?.(); }} save={async config => {
+    <div hidden={view === 'providers'} className="mx-auto max-w-2xl pb-8">{loaded ? <ExecutionSettings active={view !== 'providers'} checkHealth={checkHealth} view={view === 'routing' ? 'routing' : 'orchestration'} config={execution} models={chatModels.map(model => ({ ...model, runtime_status: runtimeHealth[model.id]?.status || (checking[model.id] ? 'checking' : 'unknown'), runtime_checking: Boolean(checking[model.id]) }))} providers={snapshot.providers} onConnect={() => { setIsAdding(true); onConnect?.(); }} save={async config => {
       const data = await request('/api/ai/execution', 'PATCH', { config }); setExecution(data.config); window.dispatchEvent(new CustomEvent('providersUpdated'));
-    }} /> : !loadError && <p role="status" className="py-10 text-center text-xs text-neutral-400">Loading…</p>}</div>
+    }} /> : !loadError && <ProviderSettingsSkeleton view={view} />}</div>
     <div hidden={view !== 'providers'} className="mx-auto max-w-2xl space-y-5 pb-8 text-neutral-100">
       {/* ── Top Header & Mode Switcher ────────────────────────────────────── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -330,9 +377,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
                   aria-pressed={isActive}
                   onClick={() => savePreferences({
                     default_mode: mode.id,
-                    preferred_model_id: mode.id === 'MANUAL'
-                      ? snapshot.preferences.preferred_model_id || chatModels[0]?.id || null
-                      : snapshot.preferences.preferred_model_id
+                    ...(mode.id === 'MANUAL' ? { preferred_model_id: chatModels.find(model => model.id === snapshot.preferences.preferred_model_id)?.id || chatModels[0]?.id || null } : {})
                   })}
                   className="relative rounded-lg p-2.5 transition-colors"
                 >
@@ -477,7 +522,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
                               animate={{ opacity: 1, scale: 1, y: 0 }}
                               exit={{ opacity: 0, scale: 0.95, y: menuDirection === 'up' ? 4 : -4 }}
                               transition={{ duration: 0.12 }}
-                              className={`absolute right-0 z-50 w-44 rounded-xl border border-white/[0.1] bg-[#181818] p-1 shadow-2xl backdrop-blur-xl ${
+                              className={`void-menu void-menu-dark absolute right-0 z-50 w-44 rounded-xl border border-white/[0.1] bg-[#181818] p-1 shadow-2xl backdrop-blur-xl ${
                                 menuDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
                               }`}
                             >
@@ -675,7 +720,8 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
               </div>
 
               <div className="grid gap-2 sm:grid-cols-2">
-                <select
+                <VoidSelect
+                  aria-label="New provider"
                   value={providerId}
                   onChange={e => setProviderId(e.target.value)}
                   className="rounded-xl border border-white/[0.08] bg-[#161616] px-3 py-2 text-xs text-white outline-none focus:border-white/30"
@@ -683,7 +729,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
                   {choices.map(([id, label]) => (
                     <option key={id} value={id}>{label}</option>
                   ))}
-                </select>
+                </VoidSelect>
 
                 <input
                   type="password"
@@ -750,12 +796,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
       </div>
 
       <VoiceAgentSettings providers={snapshot.providers} models={snapshot.models} />
-      <section aria-label="Image generation settings" className="space-y-4 rounded-2xl border border-white/10 bg-[#141414] p-4 sm:p-5">
-        <h3 className="text-sm font-semibold text-white">Image generation</h3>
-        <div className="grid gap-3 sm:grid-cols-2"><label className="space-y-2 text-xs text-neutral-400"><span>Provider</span><select aria-label="Image provider" value={imageConnectionId} onChange={event => { void savePreferences({ image_model_id: imageModels.find(model => model.connection_id === event.target.value)?.id || null }); }} className="w-full min-w-0 rounded-xl border border-white/10 bg-[#202020] px-3 py-2.5 text-xs text-white"><option value="">Automatic</option>{snapshot.providers.filter(connection => imageModels.some(model => model.connection_id === connection.id)).map(connection => <option key={connection.id} value={connection.id}>{connection.display_name}</option>)}</select></label>
-          <label className="space-y-2 text-xs text-neutral-400"><span>Model</span><select aria-label="Image model" value={selectedImage?.id || ''} onChange={event => void savePreferences({ image_model_id: event.target.value || null })} className="w-full min-w-0 rounded-xl border border-white/10 bg-[#202020] px-3 py-2.5 text-xs text-white"><option value="">Automatic</option>{imageModels.filter(model => !imageConnectionId || model.connection_id === imageConnectionId).map(model => <option key={model.id} value={model.id}>{model.display_name}</option>)}</select></label></div>
-        {!imageModels.length && <p className="text-[11px] leading-5 text-neutral-500">No image model connected. Add an image-capable provider key above.</p>}
-      </section>
+      <ImageGenerationSettings providers={snapshot.providers} models={imageModels} modelId={snapshot.preferences.image_model_id || null} onChange={modelId => savePreferences({ image_model_id: modelId })} />
       {/* ── Floating Notification Toast ─────────────────────────────────── */}
       <AnimatePresence>
         {notice && (

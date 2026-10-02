@@ -5,7 +5,7 @@ vi.mock('@supabase/supabase-js', () => ({ createClient: () => ({
   auth: { getUser: async () => ({ data: { user: { id: 'user-a' } }, error: null }), admin: { getUserById: async () => ({ data: { user: { app_metadata: { role: mocks.admin ? 'admin' : 'user' } } }, error: null }) } },
   from: (table: string) => {
     const result = { data: table === 'provider_connections' ? mocks.connections : table === 'provider_models' ? mocks.models : null, error: null };
-    const query = { select: () => query, eq: () => query, in: () => query, maybeSingle: async () => result, then: (resolve: (x: unknown) => unknown) => Promise.resolve(result).then(resolve) };
+    const query = { order: () => query, limit: () => query, select: () => query, eq: () => query, in: () => query, maybeSingle: async () => result, then: (resolve: (x: unknown) => unknown) => Promise.resolve(result).then(resolve) };
     return query;
   },
 }) }));

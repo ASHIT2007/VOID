@@ -1,14 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Tiny5&display=swap');
 @import "tailwindcss" source(none);
 @source "../app";
 @source "../components";
 @source "../lib";
 
 @custom-variant dark (&:is(.dark *));
-
-.font-tiny5 {
-  font-family: 'Tiny5', sans-serif;
-}
 
 :root {
   --background: #f9fafb;
@@ -26,7 +21,6 @@
   --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
   --font-serif: var(--font-lora), ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
   --font-mono: var(--font-geist-mono);
-  --font-tiny5: 'Tiny5', sans-serif;
 }
 
 body {
@@ -81,33 +75,107 @@ body {
 .void-menu-option[aria-selected="true"] { background: var(--void-menu-hover); }
 .void-menu button:not(:disabled):hover { background-color: var(--void-menu-hover); }
 
+.orchestration-panel { background: #1e1e1e; }
 .orchestration-canvas {
   container-type: inline-size;
-  background-image: radial-gradient(rgba(255, 255, 255, .045) .7px, transparent .7px);
-  background-size: 18px 18px;
+  background: #1e1e1e;
 }
-.orchestration-drop-ready { border-style: dashed; }
-.orchestration-node { transition: border-color .2s, background-color .2s, box-shadow .2s; }
+.orchestration-network {
+  --node-size: clamp(42px, 11cqw, 68px);
+  --primary-size: clamp(68px, 16cqw, 96px);
+  position: relative;
+  width: 100%;
+  height: clamp(400px, 90cqw, 540px);
+  margin: 0 auto 4px;
+}
+.orchestration-connections { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.orchestration-connections path {
+  fill: none;
+  stroke: #505050;
+  stroke-width: 1;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.orchestration-position {
+  position: absolute;
+  z-index: 1;
+  width: clamp(68px, 25cqw, 148px);
+  height: var(--node-size);
+  transform: translate(-50%, -50%);
+}
+.orchestration-primary { height: var(--primary-size); z-index: 2; }
+.orchestration-position:has(.orchestration-node:focus-visible) { z-index: 3; }
+.orchestration-node {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.orchestration-provider-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--node-size);
+  height: var(--node-size);
+  color: #e5e5e5;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: #292929;
+  transition: border-color .2s, background-color .2s;
+}
+.orchestration-primary .orchestration-provider-icon {
+  width: var(--primary-size);
+  height: var(--primary-size);
+  border-color: #f5f5f5;
+}
+.orchestration-node:hover .orchestration-provider-icon,
+.orchestration-node[aria-pressed="true"] .orchestration-provider-icon { background: #333; }
+.orchestration-node:focus-visible .orchestration-provider-icon { outline: 2px solid #737373; outline-offset: 4px; }
+.orchestration-node[data-drop-target="true"] .orchestration-provider-icon { background: #3a3a3a; }
+.orchestration-drop-ready { background: #2e2e2e; }
+.orchestration-logo { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; }
+.orchestration-node-label {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: 100%;
+  padding: 3px;
+  background: #1e1e1e;
+  transform: translateX(-50%);
+}
+.orchestration-primary .orchestration-node-label { top: calc(100% + 10px); }
+.orchestration-role-name { max-width: 100%; color: #d4d4d4; font-size: 11px; font-weight: 500; line-height: 15px; }
+.orchestration-role-name > span { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.orchestration-primary .orchestration-role-name { font-size: 12px; color: #fafafa; }
+.orchestration-model-name { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; max-width: 100%; color: #8f8f8f; font-size: 10px; line-height: 13px; overflow-wrap: anywhere; }
+.orchestration-health-check { position: absolute; z-index: 2; top: -2px; right: -2px; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #1e1e1e; color: #a3a3a3; }
 /* Explicit provider failure states use red, as requested; all other controls stay neutral. */
 .orchestration-node[data-provider-status="rate_limited"] .orchestration-provider-icon,
 .orchestration-node[data-provider-status="unavailable"] .orchestration-provider-icon,
 .orchestration-provider-tile[data-provider-status="rate_limited"],
-.orchestration-provider-tile[data-provider-status="unavailable"] { border-color: #ef4444; }
+.orchestration-provider-tile[data-provider-status="unavailable"] { border-color: #ef6464; }
 @container (max-width: 420px) {
-  .orchestration-stage { grid-template-columns: 48px minmax(0, 1fr); }
-  .orchestration-stage-card { grid-column: 2; }
-  .orchestration-branch { display: none; }
-  .orchestration-mobile-branch { display: block; }
-  .orchestration-stem { width: 24px; }
-  .orchestration-root { position: relative; margin-left: 48px; max-width: none; }
-  .orchestration-root::before { content: ''; position: absolute; left: -36px; top: 50%; width: 36px; border-top: 1px solid #454545; }
-  .orchestration-root::after { content: ''; position: absolute; left: -36px; top: 50%; bottom: 0; border-left: 1px solid #454545; }
-  .orchestration-root:last-child::after { top: 0; bottom: 50%; }
-  .orchestration-empty > div { left: 12px; }
-  .orchestration-empty p { margin-left: 48px; }
+  .orchestration-network[data-node-count="6"],
+  .orchestration-network[data-node-count="7"] { height: 520px; }
+}
+@container (max-width: 340px) {
+  .orchestration-network { --node-size: 42px; --primary-size: 68px; }
+  .orchestration-role-name { font-size: 10px; line-height: 13px; }
+  .orchestration-logo img { max-width: 24px; max-height: 24px; }
+  .orchestration-primary .orchestration-logo img { max-width: 30px; max-height: 30px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .void-select-trigger, .void-menu-option, .orchestration-node { transition: none; }
+  .void-select-trigger, .void-menu-option, .orchestration-provider-icon { transition: none; }
 }
 
 /* Custom Minimalist Scrollbar */

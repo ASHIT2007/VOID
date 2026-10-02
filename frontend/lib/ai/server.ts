@@ -222,7 +222,20 @@ export function apiError(error: unknown): string {
   return 'Provider connection failed. Check the key and endpoint, then try again.';
 }
 
-export async function loadByokContext(userId: string, options: { includeManaged?: boolean } = {}): Promise<{ userId: string; mode: RoutingMode; manualModelId?: string; preferredModelId?: string; fallbackEnabled: boolean; execution?: ExecutionConfig; models: Array<Record<string, unknown>> }> {
+export type SearchCredential = { id: string; providerId: 'tavily' | 'brave'; encryptedKey: string; iv: string; authTag: string; priority: number };
+
+export async function loadSearchCredentials(userId: string): Promise<SearchCredential[]> {
+  const { data, error } = await serviceDb().from('search_connections')
+    .select('id,provider_id,encrypted_api_key,key_iv,key_auth_tag,priority').eq('user_id', userId).eq('enabled', true)
+    .order('priority', { ascending: false }).limit(20);
+  // A missing search table disables retrieval while allowing ordinary chat.
+  if (error?.code === '42P01' || error?.code === 'PGRST205') return [];
+  if (error) throw new Error('Could not load your search providers.');
+  return (data || []).map(item => ({ id: item.id, providerId: item.provider_id, encryptedKey: item.encrypted_api_key,
+    iv: item.key_iv, authTag: item.key_auth_tag, priority: item.priority }));
+}
+
+export async function loadByokContext(userId: string, options: { includeManaged?: boolean } = {}): Promise<{ userId: string; mode: RoutingMode; manualModelId?: string; preferredModelId?: string; fallbackEnabled: boolean; execution?: ExecutionConfig; searchCredentials: SearchCredential[]; models: Array<Record<string, unknown>> }> {
   const db = serviceDb();
   const connectionResult = await db.from('provider_connections')
     .select('id,provider_id,encrypted_api_key,key_iv,key_auth_tag,base_url,enabled,capability_usage')
@@ -284,5 +297,5 @@ export async function loadByokContext(userId: string, options: { includeManaged?
     preferredModelId: execution?.primaryModelId || preferences?.preferred_model_id || undefined,
     fallbackEnabled: execution ? execution.fallbackModelIds.length > 0 : preferences?.fallback_enabled !== false,
     ...(execution ? { execution } : {}),
-    models: [...userModels, ...managed] };
+    searchCredentials: await loadSearchCredentials(userId), models: [...userModels, ...managed] };
 }

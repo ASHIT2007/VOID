@@ -23,12 +23,22 @@ try {
   // Re-running must not drop data or duplicate policies/triggers.
   const migration = await readFile(new URL('../backend/supabase/migrations/20260923000000_application_schema_and_rls.sql', import.meta.url), 'utf8');
   await db.exec(migration);
-  for (const name of ['20260924000000_byok.sql', '20260924010000_provider_orchestration.sql', '20260928000000_voice_agent.sql']) {
+  for (const name of ['20260924000000_byok.sql', '20260924010000_provider_orchestration.sql', '20260928000000_voice_agent.sql', '20261002000000_search_byok.sql']) {
     await db.exec(await readFile(new URL(`../backend/supabase/migrations/${name}`, import.meta.url), 'utf8'));
   }
   const a = '11111111-1111-4111-8111-111111111111', b = '22222222-2222-4222-8222-222222222222';
   await db.query('INSERT INTO auth.users(id,email) VALUES ($1,$2),($3,$4)', [a, 'a@example.com', b, 'b@example.com']);
   await db.exec('SET ROLE service_role');
+  const searchSql = `INSERT INTO public.search_connections
+    (user_id,provider_id,display_name,encrypted_api_key,key_iv,key_auth_tag,key_fingerprint,masked_key)
+    VALUES ($1,'tavily','Private search','ciphertext','iv','tag','search-fingerprint','masked') RETURNING id`;
+  await db.query(searchSql, [a]);
+  await assert.rejects(db.query(searchSql, [a]), /unique constraint/);
+  await db.query(searchSql, [b]); // Another owner has an independent connection.
+  assert.equal((await db.query('SELECT encrypted_api_key FROM public.search_connections')).rows.length, 2);
+  const searchMigration = await readFile(new URL('../backend/supabase/migrations/20261002000000_search_byok.sql', import.meta.url), 'utf8');
+  await db.exec('RESET ROLE'); await db.exec(searchMigration); await db.exec('SET ROLE service_role');
+  assert.equal((await db.query('SELECT * FROM public.search_connections')).rows.length, 2);
   const connection = (await db.query(`INSERT INTO public.provider_connections
     (user_id,provider_id,display_name,encrypted_api_key,key_iv,key_auth_tag,key_fingerprint,masked_key)
     VALUES ($1,'openai','Test connection','ciphertext','iv','tag','fingerprint','masked') RETURNING id`, [a])).rows[0].id;
@@ -41,7 +51,7 @@ try {
   await db.query("INSERT INTO public.model_usage(user_id,model_id,provider_id) VALUES ($1,$2,'openai')", [a, model]);
   for (const role of ['anon', 'authenticated']) {
     await db.exec(`SET ROLE ${role}`);
-    for (const table of ['provider_connections', 'provider_models', 'routing_preferences', 'routing_events', 'model_usage', 'voice_preferences']) {
+    for (const table of ['provider_connections', 'provider_models', 'routing_preferences', 'routing_events', 'model_usage', 'voice_preferences', 'search_connections']) {
       await assert.rejects(db.query(`SELECT * FROM public.${table}`), /permission denied/, `${role} must not read ${table}`);
       await assert.rejects(db.query(`DELETE FROM public.${table}`), /permission denied/, `${role} must not mutate ${table}`);
     }

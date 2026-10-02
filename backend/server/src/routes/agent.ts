@@ -12,6 +12,7 @@ import { runMediaWorker } from '../agent/media-orchestrator.js';
 import { MEDIA_WORKER_MS } from '../agent/media-budget.js';
 import { withByokContext, type ByokContext } from '../ai/byok-context.js';
 import { withClientTools, completeClientTool } from '../agent/client-tools.js';
+import { searchCredentialSchema } from '../ai/search-credentials.js';
 
 export const agentRouter = Router();
 
@@ -49,6 +50,7 @@ const chatSchema = z.object({
     manualModelId: z.string().uuid().optional(),
     preferredModelId: z.string().uuid().optional(),
     fallbackEnabled: z.boolean().optional(),
+    searchCredentials: z.array(searchCredentialSchema).max(20).optional(),
     execution: z.object({ version: z.literal(1), primaryModelId: z.string().uuid().nullable(),
       roles: z.array(z.object({ id: z.string().max(64), name: z.string().max(60), kind: z.enum(['researcher', 'analyst', 'fact_checker', 'answer_writer', 'custom']), modelId: z.string().uuid(), instruction: z.string().max(600) })).max(6),
       fallbackModelIds: z.array(z.string().uuid()).max(8) }).optional(),

@@ -7,6 +7,7 @@ import type { Platform } from '@void/shared/types.js';
 import { isOnCooldown } from '../services/ratelimit.js';
 import { healthPenalty } from './byok-health.js';
 import type { ExecutionConfig } from '@void/shared/execution-config.mjs';
+import type { SearchCredential } from './search-credentials.js';
 
 export interface ByokModel {
   id: string;
@@ -33,6 +34,7 @@ export interface ByokContext {
   preferredModelId?: string;
   fallbackEnabled?: boolean;
   models: ByokModel[];
+  searchCredentials?: SearchCredential[];
   execution?: ExecutionConfig;
   assignedModelId?: string;
 }
@@ -69,6 +71,10 @@ export function byokConnectionId(context: ByokContext, keyId: number): string | 
 
 export function byokModelOnCooldown(userId: string, model: ByokModel): boolean {
   return isOnCooldown(model.providerId, model.modelId, stableId(userId + model.connectionId));
+}
+
+export function byokRouteOnCooldown(userId: string, connectionId: string, providerId: string, modelId: string): boolean {
+  return isOnCooldown(providerId, modelId, stableId(userId + connectionId));
 }
 
 export const NON_CHAT_MODEL_PATTERN = /(?:^|[\/_-])(?:embed|embedding|rerank|moderation|guard|nemoguard|safety|whisper|tts|stt|asr|transcri|canary|calibration|ising|detector|deplot|parse|reward|evaluator|classifier|clip|ocr)(?:[\/_-]|$)|(?:bge|e5|gte)-/i;

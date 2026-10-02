@@ -9,6 +9,7 @@ import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/
 import { useTheme } from "./ThemeProvider";
 import ChatHistoryOverlay from './ChatHistoryOverlay';
 import ConversationActions from './ConversationActions';
+import VoidWordmark from './VoidWordmark';
 import { openWorkspace } from '@/lib/workspace/device-store';
 
 type Conversation = {
@@ -338,7 +339,7 @@ export default function Sidebar({
           >
             <div className="p-4 border-b border-gray-200 dark:border-[#2A2A2A] flex justify-between items-center shrink-0">
               <div className="flex items-center gap-3 text-gray-900 dark:text-gray-100">
-                <h1 className="text-3xl font-tiny5 tracking-[0.15em] uppercase text-gray-900 dark:text-white select-none">VOID</h1>
+                <h1 className="flex items-center select-none" aria-label="VOID"><VoidWordmark width={106} decorative /></h1>
               </div>
               <div className="flex items-center gap-1">
                 <motion.button 

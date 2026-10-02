@@ -1,0 +1,66 @@
+.page {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100svh;
+  margin: 0;
+  background: #1e1e1e;
+  color: #f5f5f5;
+  font-family: var(--font-outfit, system-ui), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page *, .page *::before, .page *::after { box-sizing: border-box; }
+.header { width: 100%; max-width: 1280px; margin: 0 auto; padding: 32px 48px; }
+.wordmark { display: inline-flex; align-items: center; text-decoration: none; }
+.content { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-items: center; gap: 72px; flex: 1; width: 100%; max-width: 1040px; margin: 0 auto; padding: 36px 40px 100px; }
+.illustration { display: flex; align-items: center; justify-content: center; min-width: 0; }
+.mascot { display: block; width: 100%; height: auto; aspect-ratio: 1; object-fit: contain; animation: float 7s ease-in-out infinite; }
+.message { min-width: 0; }
+.code { margin: 0 0 20px; color: #a3a3a3; font-size: 11px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
+.title { margin: 0; color: #fafafa; font-size: clamp(40px, 5.3vw, 66px); font-weight: 500; letter-spacing: -.055em; line-height: 1.06; text-wrap: balance; }
+.description { max-width: 370px; margin: 24px 0 0; color: #a3a3a3; font-size: 14px; line-height: 1.8; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+.primary, .secondary { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 44px; padding: 0 17px; border: 1px solid transparent; border-radius: 11px; font: inherit; font-size: 12px; font-weight: 500; text-decoration: none; cursor: pointer; transition: background-color .18s, border-color .18s; }
+.primary { background: #f5f5f5; color: #171717; }
+.primary:hover { background: #d4d4d4; }
+.secondary { border-color: #404040; background: transparent; color: #d4d4d4; }
+.secondary:hover { border-color: #737373; background: #262626; }
+.page a:focus-visible, .page button:focus-visible, .summary:focus-visible { outline: 2px solid #a3a3a3; outline-offset: 4px; }
+.details { margin-top: 32px; border-top: 1px solid #353535; }
+.summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 0; color: #a3a3a3; font-size: 11px; cursor: pointer; list-style: none; }
+.summary::-webkit-details-marker { display: none; }
+.summary svg { transition: transform .18s; }
+.details[open] .summary svg { transform: rotate(180deg); }
+.detailContent { padding: 0 0 4px; }
+.reason { max-height: 160px; overflow: auto; margin: 0; color: #a3a3a3; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.metadata { display: grid; gap: 10px; margin: 14px 0 0; font-size: 10px; line-height: 1.7; }
+.metadata > div { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 10px; }
+.metadata dt { color: #737373; }
+.metadata dd { margin: 0; color: #a3a3a3; font-family: var(--font-geist-mono, ui-monospace), monospace; overflow-wrap: anywhere; }
+.copy { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin: 10px 0 0; padding: 0; border: 0; background: transparent; color: #a3a3a3; font: inherit; font-size: 11px; cursor: pointer; }
+.copy:hover { color: #f5f5f5; }
+.copyStatus { margin: 0; color: #a3a3a3; font-size: 10px; line-height: 1.6; }
+.copyStatus:empty { display: none; }
+
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@media (max-width: 720px) {
+  .header { padding: 24px; }
+  .content { grid-template-columns: minmax(0, 1fr); align-content: center; gap: 18px; max-width: 460px; padding: 12px 28px 48px; }
+  .illustration { width: min(70vw, 260px); margin: 0 auto; }
+  .message { text-align: center; }
+  .code { margin-bottom: 14px; font-size: 10px; }
+  .title { font-size: clamp(36px, 9vw, 46px); }
+  .description { margin: 18px auto 0; font-size: 13px; }
+  .actions { justify-content: center; margin-top: 24px; }
+  .details { margin-top: 26px; text-align: left; }
+}
+@media (max-height: 760px) and (max-width: 720px) {
+  .illustration { width: min(55vw, 190px); }
+  .content { padding-top: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mascot { animation: none; }
+  .primary, .secondary, .summary svg { transition: none; }
+}

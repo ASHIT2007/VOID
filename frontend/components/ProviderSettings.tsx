@@ -11,6 +11,7 @@ import { defaultExecutionConfig, type ExecutionConfig } from '@void/shared/execu
 import VoiceAgentSettings from './VoiceAgentSettings';
 import ImageGenerationSettings from './ImageGenerationSettings';
 import ProviderSettingsSkeleton from './ProviderSettingsSkeleton';
+import SearchProviderSettings from './SearchProviderSettings';
 
 type Capability = {
   text?: boolean;
@@ -65,6 +66,17 @@ type Snapshot = {
   schemaOutdated?: boolean;
   managed?: { chat: boolean; image: boolean; voice: boolean };
 };
+
+type RuntimeStatus = { status: Model['runtime_status']; checkedAt?: number | null };
+function mergeHealth(current: Record<string, RuntimeStatus>, incoming: Record<string, RuntimeStatus>) {
+  const next = { ...current };
+  for (const [id, state] of Object.entries(incoming)) {
+    if (state.status === 'unknown' && next[id]) continue;
+    if ((state.checkedAt || 0) < (next[id]?.checkedAt || 0)) continue;
+    next[id] = state;
+  }
+  return next;
+}
 
 const choices = [
   ['openai', 'OpenAI'],
@@ -124,7 +136,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [runtimeHealth, setRuntimeHealth] = useState<Record<string, { status: Model['runtime_status'] }>>({});
+  const [runtimeHealth, setRuntimeHealth] = useState<Record<string, RuntimeStatus>>({});
   const [checking, setChecking] = useState<Record<string, number>>({});
   const snapshotRef = useRef(snapshot);
   const queues = useRef(new Map<string, Promise<void>>());
@@ -169,7 +181,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
       pending = true;
       try {
         const response = await fetch('/api/ai/health', { headers: await authHeaders(), cache: 'no-store', signal: controller.signal });
-        if (response.ok) { const body = await response.json() as { health: Record<string, { status: Model['runtime_status'] }> }; if (!controller.signal.aborted) setRuntimeHealth(current => ({ ...current, ...Object.fromEntries(Object.entries(body.health).filter(([, status]) => status.status !== 'unknown')) })); }
+        if (response.ok) { const body = await response.json() as { health: Record<string, RuntimeStatus> }; if (!controller.signal.aborted) setRuntimeHealth(current => mergeHealth(current, body.health)); }
       } catch { /* Keep the last observed state when health telemetry is unavailable. */ }
       finally { pending = false; }
     };
@@ -192,7 +204,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
           const response = await fetch('/api/ai/health', { method: 'POST', headers, cache: 'no-store', signal, body: JSON.stringify({ modelIds: [id] }) });
           if (!response.ok) throw new Error('Availability check failed');
           const data = await response.json();
-          if (!signal.aborted) setRuntimeHealth(current => ({ ...current, ...data.health }));
+          if (!signal.aborted) setRuntimeHealth(current => mergeHealth(current, data.health));
         } catch { if (!signal.aborted) failed = true; }
         finally { setChecking(current => ({ ...current, [id]: Math.max(0, (current[id] || 0) - 1) })); }
       }
@@ -797,6 +809,7 @@ export default function ProviderSettings({ view = 'providers', onConnect }: { vi
 
       <VoiceAgentSettings providers={snapshot.providers} models={snapshot.models} />
       <ImageGenerationSettings providers={snapshot.providers} models={imageModels} modelId={snapshot.preferences.image_model_id || null} onChange={modelId => savePreferences({ image_model_id: modelId })} />
+      <SearchProviderSettings />
       {/* ── Floating Notification Toast ─────────────────────────────────── */}
       <AnimatePresence>
         {notice && (

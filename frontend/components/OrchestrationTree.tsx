@@ -1,9 +1,9 @@
 'use client';
 
-import { useId, useRef, useState, type PointerEvent } from 'react';
+import { useRef, useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { ArrowDown, ArrowUp, Check, ChevronRight, GripVertical, Loader2, MessageSquare, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Workflow, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, GripVertical, Loader2, MessageSquare, Plus, RefreshCw, X } from 'lucide-react';
 import type { ExecutionConfig, ExecutionRole } from '@void/shared/execution-config.mjs';
 import type { Connection, Model } from './ProviderSettings';
 import ProviderLogo from './ProviderLogo';
@@ -13,11 +13,11 @@ const roles: Record<ExecutionRole['kind'], string> = { researcher: 'Researcher',
 const descriptions: Record<ExecutionRole['kind'], string> = { researcher: 'Gather context and evidence', analyst: 'Connect findings and reason', fact_checker: 'Verify claims and assumptions', answer_writer: 'Compose the final response', custom: 'Define your own specialist' };
 const field = 'w-full rounded-xl border border-white/10 bg-white/[.03] px-3 py-2.5 text-xs text-white outline-none focus-visible:border-white/40';
 const iconButton = 'flex size-8 items-center justify-center rounded-lg text-neutral-500 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-white disabled:opacity-25';
-const roleIcons = { researcher: Search, analyst: Sparkles, fact_checker: ShieldCheck, answer_writer: Check, custom: Workflow };
 const healthLabel = (status?: Model['runtime_status']) => status === 'rate_limited' ? 'Rate limited' : status === 'unavailable' ? 'Not responding' : status === 'checking' ? 'Checking availability' : status === 'healthy' ? 'Available' : 'Availability not yet checked';
+type TeamNode = { id: string; name: string; modelId: string | null };
 
-export default function OrchestrationTree({ config, models, providers, onChange, onConnect, disabled, dirty, onCheckHealth }: {
-  config: ExecutionConfig; models: Model[]; providers: Connection[]; onChange: (values: Partial<ExecutionConfig>) => void; onConnect: () => void; disabled: boolean; dirty: boolean;
+export default function OrchestrationTree({ config, models, providers, onChange, onConnect, disabled, onCheckHealth }: {
+  config: ExecutionConfig; models: Model[]; providers: Connection[]; onChange: (values: Partial<ExecutionConfig>) => void; onConnect: () => void; disabled: boolean;
   onCheckHealth?: () => void;
 }) {
   const [selectedId, setSelectedId] = useState('primary');
@@ -31,9 +31,15 @@ export default function OrchestrationTree({ config, models, providers, onChange,
   const didDrag = useRef(false);
   const editor = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
-  const flowId = useId().replace(/:/g, '');
   const stages = config.roles.filter(role => role.kind !== 'answer_writer');
   const writer = config.roles.find(role => role.kind === 'answer_writer');
+  // Keep the saved execution order; the writer occupies a lower position in the network.
+  const surrounding: TeamNode[] = [...stages];
+  surrounding.splice(Math.floor((stages.length + 1) / 2), 0, writer ?? { id: 'writer', name: 'Answer writer', modelId: config.primaryModelId });
+  const network = surrounding.map((entry, index) => {
+    const angle = (surrounding.length === 1 ? 90 : -90 + index * 360 / surrounding.length) * Math.PI / 180;
+    return { entry, x: 50 + 35 * Math.cos(angle), y: 46 + 34 * Math.sin(angle) };
+  });
   const connected = providers.filter(provider => models.some(model => model.connection_id === provider.id));
   const selectedRole = config.roles.find(role => role.id === selectedId);
   const selected = selectedId === 'primary' || (!selectedRole && selectedId !== 'writer')
@@ -84,32 +90,34 @@ export default function OrchestrationTree({ config, models, providers, onChange,
     setGhost({ providerId, x: Math.max(8, Math.min(innerWidth - 56, event.clientX + 12)), y: Math.max(8, Math.min(innerHeight - 56, event.clientY + 12)) });
     setOver(nodeAt(event.clientX, event.clientY));
   };
-  const node = (entry: { id: string; name: string; modelId: string | null }, step: string, subtitle: string) => {
+  const node = (entry: TeamNode, subtitle: string) => {
     const model = models.find(model => model.id === entry.modelId);
     const provider = providers.find(provider => provider.id === model?.connection_id);
     const active = selected.id === entry.id;
     const unhealthy = Boolean(entry.modelId && !model) || model?.runtime_status === 'rate_limited' || model?.runtime_status === 'unavailable';
+    const status = entry.modelId && !model ? 'Model unavailable' : healthLabel(model?.runtime_status);
     const role = config.roles.find(role => role.id === entry.id);
-    const RoleIcon = role ? roleIcons[role.kind] : entry.id === 'primary' ? Workflow : Check;
-    return <motion.button type="button" disabled={disabled} layout={!reduced} aria-label={`Configure ${entry.name}: ${model?.display_name || 'Choose a model'}`} aria-pressed={active}
-      title={`${entry.name} · ${provider?.display_name || 'Unassigned'} · ${model?.display_name || 'Choose a model'} · ${healthLabel(model?.runtime_status)}`} data-provider-status={unhealthy && !model ? 'unavailable' : model?.runtime_status || 'unknown'}
+    return <motion.button type="button" disabled={disabled} aria-label={`Configure ${entry.name}: ${model?.display_name || 'Choose a model'} · ${status}`} aria-pressed={active}
+      title={`${entry.name} · ${provider?.display_name || 'Unassigned'} · ${model?.display_name || 'Choose a model'} · ${status}`} data-provider-status={unhealthy && !model ? 'unavailable' : model?.runtime_status || 'unknown'}
       data-orchestration-node={entry.id}
+      data-node-kind={entry.id === 'primary' ? 'primary' : role?.kind || 'answer_writer'}
+      data-drop-target={over === entry.id ? 'true' : undefined}
       onClick={() => { setSelectedId(entry.id); if (armed) assignProvider(entry.id, armed); else requestAnimationFrame(() => editor.current?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'nearest' })); }}
-      whileHover={reduced || disabled ? undefined : { y: -2 }} whileTap={reduced ? undefined : { scale: .98 }} transition={transition}
-      className={`orchestration-node relative z-10 flex w-full min-w-0 items-center gap-3 rounded-2xl border p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${over === entry.id ? 'border-white bg-white/15 ring-4 ring-white/10' : active ? 'border-white/35 bg-[#282828] shadow-lg' : 'border-white/10 bg-[#1c1c1c] hover:border-white/25'} ${dragging || armed ? 'orchestration-drop-ready' : ''}`}>
-      <motion.span key={entry.modelId} initial={reduced ? false : { opacity: 0, scale: .8 }} animate={{ opacity: 1, scale: 1 }} className={`orchestration-provider-icon flex size-11 shrink-0 items-center justify-center rounded-xl border bg-white/[.04] ${unhealthy ? 'border-red-500/80' : 'border-white/10'}`}>
-        {provider ? <ProviderLogo providerId={provider.provider_id} name={provider.display_name} baseUrl={provider.base_url} size={22} /> : <Plus size={18} className="text-neutral-500" />}
+      transition={transition}
+      className="orchestration-node group text-center outline-none disabled:cursor-default">
+      <motion.span key={entry.modelId} initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} className={`orchestration-provider-icon ${dragging || armed ? 'orchestration-drop-ready' : ''}`}>
+        <span className="orchestration-logo">{provider ? <ProviderLogo providerId={provider.provider_id} name={provider.display_name} baseUrl={provider.base_url} size={entry.id === 'primary' ? 36 : 27} /> : <Plus size={entry.id === 'primary' ? 26 : 20} className="text-neutral-500" />}</span>
+        {(model?.runtime_checking || model?.runtime_status === 'checking') && <span className="orchestration-health-check"><Loader2 size={12} aria-label="Checking availability" className="animate-spin motion-reduce:animate-none" /></span>}
       </motion.span>
-      <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><RoleIcon size={11} className="shrink-0 text-neutral-500" /><span className="truncate text-[11px] font-medium text-neutral-200">{entry.name}</span></span><span className="mt-1 block truncate text-[10px] text-neutral-500">{model?.display_name || (entry.modelId ? 'Unavailable' : 'Select model')}</span><span className="sr-only">{over === entry.id ? 'Release to assign provider' : subtitle}{unhealthy ? ` · ${healthLabel(model?.runtime_status)}` : ''}</span></span>
-      <span className="absolute right-3 top-2 text-[8px] tabular-nums text-neutral-600">{step}</span>
-      {model?.runtime_checking || model?.runtime_status === 'checking' ? <Loader2 size={13} aria-label="Checking availability" className="shrink-0 animate-spin text-neutral-400 motion-reduce:animate-none" /> : <ChevronRight size={13} className={active ? 'text-neutral-300' : 'text-neutral-600'} />}
+      <span className="orchestration-node-label">
+        <span className="orchestration-role-name"><span>{entry.name}</span></span>
+        <span className="orchestration-model-name">{model?.display_name || (entry.modelId ? 'Model unavailable' : 'Select model')}</span>
+        <span className="sr-only">{provider?.display_name}{role ? ` · ${roles[role.kind]}` : ''} · {over === entry.id ? 'Release to assign provider' : subtitle}</span>
+      </span>
     </motion.button>;
   };
-  const connector = (path: string, marker = false) => <>
-    <path d={path} fill="none" stroke="#454545" strokeWidth="1.2" vectorEffect="non-scaling-stroke" markerEnd={marker ? `url(#${flowId}-arrow)` : undefined} />
-  </>;
 
-  return <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#161616]">
+  return <section className="orchestration-panel overflow-hidden rounded-2xl border border-white/10">
     <div className="border-b border-white/[.06] p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3"><h4 className="text-[10px] font-medium text-neutral-500">Providers</h4><div className="flex items-center gap-1">{onCheckHealth && <button type="button" onClick={onCheckHealth} disabled={disabled || models.some(model => model.runtime_checking || model.runtime_status === 'checking')} aria-label="Check model availability" title="Check availability" className={iconButton}><RefreshCw size={14} className={models.some(model => model.runtime_checking || model.runtime_status === 'checking') ? 'animate-spin motion-reduce:animate-none' : ''} /></button>}<button type="button" onClick={onConnect} aria-label="Connect another provider" title="Connect provider" className={iconButton}><Plus size={16} /></button></div></div>
       <div className="mt-2 flex flex-wrap gap-2" aria-label="Drag a provider to any node">
@@ -121,7 +129,7 @@ export default function OrchestrationTree({ config, models, providers, onChange,
           onPointerUp={event => { if (didDrag.current) { const target = nodeAt(event.clientX, event.clientY); if (target) assignProvider(target, provider.id); } pointerStart.current = null; setGhost(null); setDragging(null); setOver(null); }}
           onPointerCancel={() => { pointerStart.current = null; didDrag.current = false; setGhost(null); setDragging(null); setOver(null); }}
           onClick={() => { if (didDrag.current) { didDrag.current = false; return; } setArmed(armed === provider.id ? null : provider.id); }}
-          className={`orchestration-provider-tile relative flex size-14 items-center justify-center rounded-2xl border transition-all hover:-translate-y-0.5 motion-reduce:transform-none active:cursor-grabbing ${armed === provider.id ? 'border-white/40 bg-white/10 text-white' : 'cursor-grab border-white/10 bg-white/[.025] text-neutral-300 hover:border-white/25'} ${dragging === provider.id ? 'opacity-40' : ''}`}>
+          className={`orchestration-provider-tile relative flex size-14 items-center justify-center rounded-2xl border transition-colors active:cursor-grabbing ${armed === provider.id ? 'border-white/40 bg-white/10 text-white' : 'cursor-grab border-white/10 bg-white/[.025] text-neutral-300 hover:border-white/25'} ${dragging === provider.id ? 'opacity-40' : ''}`}>
           <span className="pointer-events-none"><ProviderLogo providerId={provider.provider_id} name={provider.display_name} baseUrl={provider.base_url} size={24} /></span><GripVertical size={9} className="pointer-events-none absolute bottom-1.5 right-1.5 text-neutral-600" />
         </button>)}
         {!connected.length && <button type="button" onClick={onConnect} className="rounded-xl border border-dashed border-white/20 px-4 py-3 text-xs text-neutral-400">Connect a provider to build your team</button>}
@@ -129,27 +137,22 @@ export default function OrchestrationTree({ config, models, providers, onChange,
       <p className={armed ? 'mt-2 text-[10px] text-neutral-400' : 'sr-only'}>{armed ? 'Select a node' : 'Drag or select providers to assign them. Providers and models can be reused.'}</p>
     </div>
 
-    <div className="orchestration-canvas p-4 sm:p-6" aria-label="Orchestration flow">
-      <div className="mb-5 flex items-center justify-between gap-2 text-[10px] text-neutral-500"><Workflow size={14} aria-label="Execution tree" /><span title={`${dirty ? 'Unsaved changes' : 'Configured'} · ${stages.length} specialists`} className="flex items-center gap-2 rounded-full border border-white/10 bg-[#161616] px-2.5 py-1"><span className={`size-1 rounded-full ${dirty ? 'bg-white' : 'bg-neutral-600'}`} />{String(stages.length).padStart(2, '0')}</span></div>
-      <svg className="absolute h-0 w-0" aria-hidden="true"><defs><marker id={`${flowId}-arrow`} markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto"><path d="M0 0L5 2.5L0 5" fill="#858585" /></marker></defs></svg>
-      <div className="mx-auto max-w-[540px]">
-        <div className="orchestration-root mx-auto max-w-64">{node({ id: 'primary', name: 'Primary', modelId: config.primaryModelId }, '01', 'Coordinates the team')}</div>
-        <div className="orchestration-stem relative h-8"><svg width="100%" height="100%" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">{connector('M50 0 V32', true)}</svg></div>
+    <div className="orchestration-canvas px-3 pb-4 pt-4 sm:px-6 sm:pb-5 sm:pt-5" aria-label="Orchestration network">
+      <div className="orchestration-network" data-node-count={network.length}>
+        <svg className="orchestration-connections" viewBox="0 0 600 600" preserveAspectRatio="none" aria-hidden="true">
+          {network.map(({ entry, x, y }) => <path key={entry.id} d={`M300 276 L${x * 6} ${y * 6}`} />)}
+        </svg>
+        <div className="orchestration-position orchestration-primary" style={{ left: '50%', top: '46%' }}>{node({ id: 'primary', name: 'Primary', modelId: config.primaryModelId }, 'Coordinates the team')}</div>
         <AnimatePresence initial={false}>
-          {stages.map((role, index) => <motion.div key={role.id} layout={!reduced ? 'position' : false} initial={reduced ? false : { opacity: 0, height: 0 }} animate={{ opacity: 1, height: 112 }} exit={{ opacity: 0, height: 0 }} transition={transition} className="orchestration-stage relative grid grid-cols-[1fr_40px_1fr] items-center">
-            <svg className="orchestration-branch pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 540 112" preserveAspectRatio="none" aria-hidden="true">{connector('M270 0 V112', true)}{connector(index % 2 === 0 ? 'M270 24 Q270 56 250 56' : 'M270 24 Q270 56 290 56', true)}<circle cx="270" cy="24" r="3" fill="#161616" stroke="#858585" /></svg>
-            <svg className="orchestration-mobile-branch pointer-events-none absolute inset-0 hidden h-full w-12" viewBox="0 0 48 112" aria-hidden="true">{connector('M12 0 V112', true)}{connector('M12 24 Q12 56 46 56', true)}<circle cx="12" cy="24" r="3" fill="#161616" stroke="#858585" /></svg>
-            <div className={`orchestration-stage-card min-w-0 ${index % 2 ? 'col-start-3' : 'col-start-1'}`}>{node(role, String(index + 2).padStart(2, '0'), descriptions[role.kind])}</div>
+          {network.map(({ entry, x, y }) => <motion.div key={entry.id} initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={transition} className="orchestration-position" style={{ left: `${x}%`, top: `${y}%` }}>
+            {node(entry, entry.id === 'writer' ? 'Uses the primary model to write the answer' : descriptions[config.roles.find(role => role.id === entry.id)?.kind ?? 'answer_writer'])}
           </motion.div>)}
         </AnimatePresence>
-        {!stages.length && <div className="orchestration-empty relative py-5"><div className="absolute inset-y-0 left-1/2 border-l border-dashed border-white/15" /><button type="button" title="Add specialist" aria-label="Add first specialist" onClick={addRole} disabled={disabled || !config.primaryModelId} className="relative mx-auto flex size-9 items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#161616] text-neutral-500"><Plus size={15} /></button></div>}
-        <div className="orchestration-stem relative h-8"><svg width="100%" height="100%" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">{connector('M50 0 V32', true)}</svg></div>
-        <div className="orchestration-root mx-auto max-w-64">{node(writer ?? { id: 'writer', name: 'Answer writer', modelId: config.primaryModelId }, String(stages.length + 2).padStart(2, '0'), writer ? 'Synthesizes the final answer' : 'Uses the primary model')}</div>
       </div>
-      <div className="mt-5 flex items-center justify-center gap-3 border-t border-white/[.06] pt-4"><p className="sr-only">Specialists run top to bottom, then write the answer.</p><button type="button" onClick={addRole} disabled={disabled || !config.primaryModelId || config.roles.length >= 6} aria-label="Add specialist" title={`Add specialist · ${config.roles.length}/6 roles`} className="flex size-9 items-center justify-center rounded-xl border border-white/15 bg-white/[.04] text-neutral-200 transition-colors hover:bg-white/10 disabled:opacity-30"><Plus size={15} /></button></div>
+      <div className="flex justify-center pt-1"><p className="sr-only">Select a node to configure its role. Specialists execute in their saved order, followed by the answer writer.</p><button type="button" onClick={addRole} disabled={disabled || !config.primaryModelId || config.roles.length >= 6} aria-label="Add specialist" title={`Add specialist · ${config.roles.length}/6 roles`} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-white disabled:opacity-30"><Plus size={16} /></button></div>
     </div>
 
-    <motion.div ref={editor} key={selected.id} initial={reduced ? false : { opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={transition} className="border-t border-white/[.08] bg-[#191919] p-4 sm:p-5" aria-label={`Edit ${selected.name}`}>
+    <motion.div ref={editor} key={selected.id} initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={transition} className="border-t border-white/[.08] p-4 sm:p-5" aria-label={`Edit ${selected.name}`}>
       <div className="mb-3 flex items-center justify-between gap-3"><h4 className="text-xs font-medium">{selected.name}</h4>{selectedRole && <div className="flex items-center gap-1"><button type="button" onClick={() => setShowInstructions(!showInstructions)} className={iconButton} aria-label="Edit instructions" aria-expanded={showInstructions} title="Instructions"><MessageSquare size={14} /></button>{selectedRole.kind !== 'answer_writer' && <><button type="button" onClick={() => move(-1)} disabled={disabled || stages[0]?.id === selected.id} className={iconButton} aria-label={`Move ${selected.name} earlier`} title="Move earlier"><ArrowUp size={14} /></button><button type="button" onClick={() => move(1)} disabled={disabled || stages.at(-1)?.id === selected.id} className={iconButton} aria-label={`Move ${selected.name} later`} title="Move later"><ArrowDown size={14} /></button></>}<button type="button" onClick={() => { onChange({ roles: config.roles.filter(role => role.id !== selected.id) }); setSelectedId('primary'); }} disabled={disabled} className={iconButton} aria-label={`Remove ${selected.name}`} title="Remove role"><X size={14} /></button></div>}</div>
       <div className="grid min-w-0 gap-3 sm:grid-cols-2">
         <label className="space-y-2 text-[11px] text-neutral-400"><span>Provider</span><VoidSelect aria-label={`Provider for ${selected.name}`} value={selectedProvider?.id ?? ''} onChange={event => assignProvider(selected.id, event.target.value)} disabled={disabled} className="text-white" options={[{ value: '', label: 'Choose a provider', disabled: true }, ...connected.map(provider => ({ value: provider.id, label: provider.display_name, icon: <ProviderLogo providerId={provider.provider_id} name={provider.display_name} baseUrl={provider.base_url} size={16} /> }))]} /></label>

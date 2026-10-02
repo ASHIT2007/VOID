@@ -39,10 +39,6 @@
   align-items: center;
   gap: 11px;
   padding: 28px 36px;
-  font-family: var(--font-outfit), sans-serif;
-  font-size: 19px;
-  font-weight: 500;
-  letter-spacing: 0.16em;
 }
 
 .brand img { object-fit: contain; }

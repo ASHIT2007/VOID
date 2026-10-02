@@ -30,14 +30,14 @@ export async function checkByokReadiness(userId: string, model: ByokModel): Prom
       const provider = resolveProvider(model.providerId as Platform, model.baseUrl, true);
       if (!provider) throw new Error('Provider is unavailable');
       const apiKey = decrypt(model.encryptedKey, model.iv, model.authTag);
-      const completion = await provider.chatCompletion(apiKey, [{ role: 'user', content: 'Reply OK.' }], model.modelId,
-        { max_tokens: 16, signal: AbortSignal.timeout(8000) });
-      // A length-limited reasoning response still proves that the API accepted the model.
-      if (!completion.choices?.length || !completion.choices.some(choice =>
-        typeof choice.message?.content === 'string' && Boolean(choice.message.content.trim()) || choice.finish_reason === 'length')) {
-        throw new Error('Provider returned an empty response');
+      let content = '';
+      for await (const chunk of provider.streamChatCompletion(apiKey, [{ role: 'user', content: 'Reply OK.' }], model.modelId,
+        { max_tokens: 64, reasoning_effort: 'low', signal: AbortSignal.timeout(8000) })) {
+        const text = chunk.choices?.[0]?.delta?.content;
+        if (typeof text === 'string') content += text;
       }
-      recordByokOutcome(userId, model.providerId, model.modelId, true, Date.now() - started, { connectionId: model.connectionId });
+      if (!content.trim()) throw new Error('Provider returned an empty response');
+      recordByokOutcome(userId, model.providerId, model.modelId, true, Date.now() - started, { connectionId: model.connectionId, source: 'probe', startedAt: started });
     } catch (error) {
       recordByokOutcome(userId, model.providerId, model.modelId, false, Date.now() - started, { connectionId: model.connectionId, error });
     }

@@ -22,9 +22,13 @@ export function healthPenalty(userId: string, providerId: string, modelId: strin
   return (1 - item.successEma) * 6 * decay + (item.latencyEma ? Math.min(item.latencyEma / 20_000, 2) : 0) * decay;
 }
 
-export function recordByokOutcome(userId: string, providerId: string, modelId: string, success: boolean, latencyMs: number, details?: { connectionId?: string; error?: unknown }): void {
+export function recordByokOutcome(userId: string, providerId: string, modelId: string, success: boolean, latencyMs: number, details?: { connectionId?: string; error?: unknown; source?: 'probe'; startedAt?: number }): void {
   if (details?.connectionId) {
     const id = key(userId, details.connectionId, modelId);
+    const previous = runtimeHealth.get(id);
+    // A probe that overlapped a failed turn cannot erase its failure feedback.
+    if (success && details.source === 'probe' && previous && previous.status !== 'healthy'
+      && (previous.checkedAt! > (details.startedAt ?? 0) || previous.retryAt! > Date.now())) return;
     if (success) runtimeHealth.set(id, { status: 'healthy', retryAt: null, checkedAt: Date.now() });
     else {
       const error = details.error as { status?: number; statusCode?: number; message?: string } | undefined;

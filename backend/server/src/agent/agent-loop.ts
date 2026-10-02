@@ -669,6 +669,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
           success = true;
           break;
         } catch (streamErr: any) {
+          if (options.signal?.aborted && options.signal.reason instanceof Error && options.signal.reason.name === 'DeadlineError') {
+            const byok = currentByokContext();
+            if (byok) recordByokOutcome(byok.userId, platform, modelId, false, Date.now() - providerStartedAt, { connectionId: byokConnectionId(byok, keyId), error: new Error('Provider response timed out') });
+          }
           assertNotAborted();
           if (useTools && rejectsNativeTools(streamErr) && !textOnlyRoutes.has(routeId)) {
             textOnlyRoutes.add(routeId);

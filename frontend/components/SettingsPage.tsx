@@ -10,7 +10,8 @@ import { rememberLoginProfile } from "@/lib/login-profile";
 import ProviderSettings from './ProviderSettings';
 import VoidSelect from './ui/VoidSelect';
 
-import { ADMIN_EMAIL, getAccountPlan, isAdminEmail, PLAN_DETAILS } from "@/lib/plans";
+import AccountAccessPanel from "./AccountAccessPanel";
+import { ADMIN_EMAIL, getAccountPlan, isAdminEmail } from "@/lib/plans";
 
 interface SessionUsage {
   [key: string]: {
@@ -510,88 +511,7 @@ export default function SettingsPage({ onClose, sessionUsage, onClearChats, init
                 </div>
 
                 <AnimatePresence>
-                  {showPlanBenefits && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0, y: -10 }}
-                      animate={{ opacity: 1, height: "auto", y: 0 }}
-                      exit={{ opacity: 0, height: 0, y: -10 }}
-                      transition={{ duration: 0.25, ease: "easeInOut" }}
-                      className="overflow-hidden mb-8"
-                    >
-                      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5 dark:border-[#323236] dark:bg-[#131315] sm:p-6">
-                        <div className="mb-5 flex items-start justify-between gap-4">
-                          <div>
-                            <h3 className="text-lg font-bold text-gray-900 dark:text-white">Plans & account access</h3>
-                            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                              Compare access and features. Provider quotas apply to both plans.
-                            </p>
-                          </div>
-                          <button 
-                            type="button" 
-                            onClick={() => setShowPlanBenefits(false)}
-                            className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                          >
-                            Hide
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                          <div className={`rounded-xl border bg-white p-5 dark:bg-[#1B1B1E] ${accountPlan === "free" ? "border-black dark:border-white" : "border-gray-200 dark:border-[#343438]"}`}>
-                            <div className="mb-4 flex items-center justify-between gap-3">
-                              <div>
-                                <h4 className="text-lg font-bold text-gray-900 dark:text-white">{PLAN_DETAILS.free.name}</h4>
-                                <p className="text-xs text-gray-500">Default account access</p>
-                              </div>
-                              {accountPlan === "free" && <span className="rounded-full bg-black px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white dark:bg-white dark:text-black">Current</span>}
-                            </div>
-                            <p className="mb-4 text-sm leading-relaxed text-gray-600 dark:text-gray-400">{PLAN_DETAILS.free.description}</p>
-                            <ul className="space-y-2.5 text-sm text-gray-700 dark:text-gray-300">
-                              {PLAN_DETAILS.free.features.slice(0, 2).map((feature) => <li key={feature} className="flex items-start gap-2"><CheckCircle2 size={15} className="mt-0.5 shrink-0 text-gray-500" />{feature}</li>)}
-                            </ul>
-                          </div>
-
-                          <div className={`rounded-xl border bg-[#18181A] p-5 text-white dark:bg-white dark:text-black ${accountPlan === "admin-pro" ? "border-black dark:border-white" : "border-[#343438] dark:border-gray-300"}`}>
-                            <div className="mb-4 flex items-center justify-between gap-3">
-                              <div>
-                                <h4 className="text-lg font-bold">{PLAN_DETAILS.adminPro.name}</h4>
-                                <p className="text-xs text-gray-400 dark:text-gray-600">Reserved for {ADMIN_EMAIL}</p>
-                              </div>
-                              {accountPlan === "admin-pro" ? (
-                                <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-black dark:bg-black dark:text-white">Active</span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 rounded-full border border-white/25 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-300 dark:border-black/20 dark:text-gray-700"><Lock size={10} /> Admin only</span>
-                              )}
-                            </div>
-                            <p className="mb-4 text-sm leading-relaxed text-gray-300 dark:text-gray-700">{PLAN_DETAILS.adminPro.description}</p>
-                            <ul className="space-y-2.5 text-sm text-gray-200 dark:text-gray-800">
-                              {PLAN_DETAILS.adminPro.features.slice(0, 2).map((feature) => <li key={feature} className="flex items-start gap-2"><CheckCircle2 size={15} className="mt-0.5 shrink-0 text-gray-400 dark:text-gray-600" />{feature}</li>)}
-                            </ul>
-                          </div>
-                        </div>
-
-                        <details className="mt-4 group/compare">
-                          <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg py-2 text-sm font-medium text-gray-600 dark:text-gray-300">Compare all features<ChevronDown size={14} className="transition-transform group-open/compare:rotate-180" /></summary>
-                        <div className="mt-3 overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-[#343438] dark:bg-[#1B1B1E]">
-                          <table className="w-full min-w-[560px] border-collapse text-left text-sm">
-                            <thead className="bg-gray-100 text-[11px] uppercase tracking-[0.12em] text-gray-500 dark:bg-[#242427] dark:text-gray-400">
-                              <tr><th className="px-4 py-3 font-semibold">Capability</th><th className="px-4 py-3 font-semibold">Free</th><th className="px-4 py-3 font-semibold">Administrator Pro</th></tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-200 text-gray-700 dark:divide-[#303034] dark:text-gray-300">
-                              {[
-                                ["Reasoning", "Penumbra and Umbra", "Penumbra, Umbra, and Tenebrae"],
-                                ["Images and files", "Limited usage", "Full application access"],
-                                ["Voice agent", "Not included", "Enabled"],
-                                ["Routing", "Standard priority", "Highest application priority"],
-                                ["Application caps", "Fair-use limits", "No message cap"],
-                                ["Provider quotas", "Still apply", "Still apply"],
-                              ].map(([capability, free, pro]) => <tr key={capability}><th className="px-4 py-3 font-semibold text-gray-900 dark:text-white">{capability}</th><td className="px-4 py-3">{free}</td><td className="px-4 py-3">{pro}</td></tr>)}
-                            </tbody>
-                          </table>
-                        </div>
-                        </details>
-                      </div>
-                    </motion.div>
-                  )}
+                  {showPlanBenefits && <AccountAccessPanel accountPlan={accountPlan} onClose={() => setShowPlanBenefits(false)} />}
                 </AnimatePresence>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">

@@ -14,11 +14,11 @@ export async function GET(request: Request) {
     const { data: providers, error } = await db.from('provider_connections').select('id').eq('user_id', userId);
     if (error) throw error;
     if (!providers?.length) return Response.json({ health: {} }, { headers });
-    const { data: models, error: modelError } = await db.from('provider_models').select('id,connection_id,model_id').in('connection_id', providers.map(provider => provider.id));
+    const { data: models, error: modelError } = await db.from('provider_models').select('id,connection_id,model_id,provider_id').in('connection_id', providers.map(provider => provider.id));
     if (modelError) throw modelError;
     const response = await fetch(backendUrl('/api/ai/health'), {
       method: 'POST', cache: 'no-store', headers: backendHeaders({ 'Content-Type': 'application/json' }), signal: AbortSignal.timeout(5000),
-      body: JSON.stringify({ userId, models: (models || []).map(model => ({ id: model.id, connectionId: model.connection_id, modelId: model.model_id })) }),
+      body: JSON.stringify({ userId, models: (models || []).map(model => ({ id: model.id, connectionId: model.connection_id, modelId: model.model_id, providerId: model.provider_id })) }),
     });
     if (!response.ok) throw new Error('Health service unavailable');
     const data = await response.json();

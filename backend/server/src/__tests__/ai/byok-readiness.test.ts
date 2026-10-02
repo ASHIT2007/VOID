@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({ completion: vi.fn(), decrypt: vi.fn(() => 'private-key'), cooldown: vi.fn(() => false) }));
-vi.mock('../../providers/index.js', () => ({ resolveProvider: () => ({ chatCompletion: mocks.completion }) }));
+vi.mock('../../providers/index.js', () => ({ resolveProvider: () => ({ streamChatCompletion: async function* (...args: unknown[]) { const response = await mocks.completion(...args); yield { choices: [{ delta: { content: response.choices[0].message.content } }] }; } }) }));
 vi.mock('../../lib/crypto.js', () => ({ decrypt: mocks.decrypt }));
 vi.mock('../../ai/byok-context.js', () => ({ byokModelOnCooldown: mocks.cooldown, NON_CHAT_MODEL_PATTERN: /embedding/ }));
 import { checkByokReadiness } from '../../ai/byok-readiness.js';
@@ -18,7 +18,7 @@ describe('proactive orchestration readiness', () => {
     expect(a.status).toBe('healthy'); expect(b).toEqual(a);
     await checkByokReadiness('owner-repeat', target);
     expect(mocks.completion).toHaveBeenCalledTimes(1);
-    expect(mocks.completion).toHaveBeenCalledWith('private-key', [{ role: 'user', content: 'Reply OK.' }], 'repeat', { max_tokens: 16, signal: expect.any(AbortSignal) });
+    expect(mocks.completion).toHaveBeenCalledWith('private-key', [{ role: 'user', content: 'Reply OK.' }], 'repeat', { max_tokens: 64, reasoning_effort: 'low', signal: expect.any(AbortSignal) });
     await checkByokReadiness('another-owner', target);
     expect(mocks.completion).toHaveBeenCalledTimes(2);
   });
@@ -49,7 +49,7 @@ describe('proactive orchestration readiness', () => {
     expect((await checkByokReadiness('owner-cooldown', model('limited'))).status).toBe('rate_limited');
     expect(mocks.completion).toHaveBeenCalledTimes(2);
   });
-  it('serializes models sharing credentials and accepts length-limited reasoning responses', async () => {
+  it('serializes shared credentials and flags streams with no answer content', async () => {
     let release!: (value: typeof success) => void;
     mocks.completion.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
     const first = checkByokReadiness('owner-sequence', model('first'));
@@ -58,7 +58,7 @@ describe('proactive orchestration readiness', () => {
     release(success); await Promise.all([first, second]);
     expect(mocks.completion.mock.calls.map(call => call[2])).toEqual(['first', 'second']);
     mocks.completion.mockResolvedValueOnce({ choices: [{ message: { content: null }, finish_reason: 'length' }] });
-    expect((await checkByokReadiness('owner-reasoning', model('reasoning'))).status).toBe('healthy');
+    expect((await checkByokReadiness('owner-reasoning', model('reasoning'))).status).toBe('unavailable');
   });
   it('uses recent execution failures instead of mistaking cached success for availability', async () => {
     const target = model('live-failure');

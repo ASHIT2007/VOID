@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { runAgentLoop, type AgentEvent, type AgentLoopOptions } from './agent-loop.js';
 import { getTool, type ToolImage } from './tool-registry.js';
 import { MEDIA_SEARCH_MS } from './media-budget.js';
+import { userSearchCredentials } from '../ai/search-credentials.js';
 
 export type MediaIntentCategory = 'explicit' | 'place' | 'product' | 'person_or_subject' | 'animal_or_plant' | 'food' | 'historical' | 'instructional' | 'topic' | 'current_event' | 'artifact' | 'none';
 
@@ -406,7 +407,8 @@ export async function runMediaWorker(options: AgentLoopOptions & { responseText?
     queries: [subject], altText: `Reference image of ${subject}`, placement: 'inline', safetyCategory: 'none' };
   options.signal?.throwIfAborted();
 
-  const imageSearch = process.env.BRAVE_API_KEY || !process.env.TAVILY_API_KEY
+  const credentials = userSearchCredentials();
+  const imageSearch = credentials.some(item => item.providerId === 'brave') || !credentials.some(item => item.providerId === 'tavily')
     ? getTool('image_search')
     : getTool('web_search');
   if (!imageSearch) {

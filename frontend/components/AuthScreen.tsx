@@ -8,6 +8,7 @@ import { sendPhoneCode, verifyPhoneCode } from '@/lib/auth-phone';
 import { normalizeLoginEmail, readLoginAvatar } from '@/lib/login-profile';
 import styles from './AuthScreen.module.css';
 import AuthStarfield from './AuthStarfield';
+import VoidWordmark from './VoidWordmark';
 
 type AuthMode = 'login' | 'signup' | 'reset' | 'phone';
 type SocialProvider = 'google' | 'github';
@@ -182,7 +183,7 @@ export default function AuthScreen() {
       <SpaceBackground />
       <header className={styles.brand} aria-label="VOID">
         <Image src="/void%20logo%20white.png" alt="" width={30} height={30} />
-        <span>VOID</span>
+        <VoidWordmark tone="white" width={90} decorative />
       </header>
 
       <div className={styles.content}>

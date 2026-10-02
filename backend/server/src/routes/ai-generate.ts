@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { byokConnectionId, withByokContext, routeByokRequest, type ByokContext } from '../ai/byok-context.js';
+import { byokConnectionId, byokRouteOnCooldown, withByokContext, routeByokRequest, type ByokContext } from '../ai/byok-context.js';
 import type { ChatMessage } from '@void/shared/types.js';
 import { getByokRuntimeHealth, recordByokOutcome } from '../ai/byok-health.js';
 import { checkByokReadiness } from '../ai/byok-readiness.js';
+import { searchCredentialSchema } from '../ai/search-credentials.js';
 
 export const aiGenerateRouter = Router();
 
@@ -11,11 +12,15 @@ export const aiGenerateRouter = Router();
 // only the authenticated owner's model records, never client-provided IDs.
 aiGenerateRouter.post('/health', (req, res) => {
   const result = z.object({ userId: z.string().uuid(), models: z.array(z.object({
-    id: z.string().uuid(), connectionId: z.string().uuid(), modelId: z.string().max(256),
+    id: z.string().uuid(), connectionId: z.string().uuid(), modelId: z.string().max(256), providerId: z.string().max(80).optional(),
   })).max(2000) }).safeParse(req.body);
   if (!result.success) { res.status(400).json({ error: 'Invalid health request.' }); return; }
   const { userId, models } = result.data;
-  res.set('Cache-Control', 'no-store').json({ health: Object.fromEntries(models.map(model => [model.id, getByokRuntimeHealth(userId, model.connectionId, model.modelId)])) });
+  res.set('Cache-Control', 'no-store').json({ health: Object.fromEntries(models.map(model => {
+    const health = getByokRuntimeHealth(userId, model.connectionId, model.modelId);
+    return [model.id, model.providerId && byokRouteOnCooldown(userId, model.connectionId, model.providerId, model.modelId)
+      ? { ...health, status: 'rate_limited', checkedAt: Date.now() } : health];
+  })) });
 });
 
 const schema = z.object({
@@ -25,6 +30,7 @@ const schema = z.object({
     manualModelId: z.string().uuid().optional(),
     preferredModelId: z.string().uuid().optional(),
     fallbackEnabled: z.boolean().optional(),
+    searchCredentials: z.array(searchCredentialSchema).max(20).optional(),
     execution: z.object({ version: z.literal(1), primaryModelId: z.string().uuid().nullable(),
       roles: z.array(z.object({ id: z.string().max(64), name: z.string().max(60), kind: z.enum(['researcher', 'analyst', 'fact_checker', 'answer_writer', 'custom']), modelId: z.string().uuid(), instruction: z.string().max(600) })).max(6),
       fallbackModelIds: z.array(z.string().uuid()).max(8) }).optional(),

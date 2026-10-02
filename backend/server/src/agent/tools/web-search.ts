@@ -1,6 +1,6 @@
 import { tavily } from '@tavily/core';
-import { createHash } from 'node:crypto';
 import { registerTool, ToolResult, ToolOptions } from '../tool-registry.js';
+import { userSearchCredentials, searchCredentialAvailable, openSearchCredential, markSearchFailure, markSearchSuccess, searchCredentialIssues, type SearchCredential } from '../../ai/search-credentials.js';
 
 interface WebSearchArgs {
   query: string;
@@ -294,32 +294,12 @@ async function searchWikipediaWeb(query: string, limit: number): Promise<TavilyR
     .slice(0, limit);
 }
 
-// Circuit-break a failing API briefly instead of spending every tool deadline
-// retrying a quota-exhausted account. Keys never enter logs or tool results.
-const providerCooldown = new Map<string, number>();
-const providerIssue = new Map<string, string>();
-const providerCredentials = new Map<string, string>();
-function providerAvailable(id: string): boolean {
-  const credential = id === 'Tavily' ? process.env.TAVILY_API_KEY : process.env.BRAVE_API_KEY;
-  const fingerprint = createHash('sha256').update(credential || '').digest('hex');
-  if (providerCredentials.get(id) !== fingerprint) {
-    providerCredentials.set(id, fingerprint);
-    providerCooldown.delete(id); providerIssue.delete(id);
-  }
-  return (providerCooldown.get(id) || 0) <= Date.now();
-}
-function markProviderFailure(id: string, status?: number) {
-  const exhausted = status === 432 || status === 433;
-  providerCooldown.set(id, Date.now() + (exhausted ? 5 * 60_000 : status === 401 || status === 403 ? 60_000 : 20_000));
-  providerIssue.set(id, exhausted ? `${id} search quota is exhausted.` : status === 401 || status === 403 ? `${id} search credentials were rejected.` : `${id} search is temporarily unavailable.`);
-}
-
-async function searchBraveApi(query: string, limit: number, timeRange?: WebSearchArgs['timeRange']): Promise<TavilyResult[]> {
+async function searchBraveApi(credential: SearchCredential, query: string, limit: number, timeRange?: WebSearchArgs['timeRange']): Promise<TavilyResult[]> {
   const endpoint = new URL('https://api.search.brave.com/res/v1/web/search');
-  endpoint.searchParams.set('q', query); endpoint.searchParams.set('count', String(Math.min(20, limit * 2)));
+  endpoint.searchParams.set('q', query.split(/\s+/).slice(0, 75).join(' ').slice(0, 600)); endpoint.searchParams.set('count', String(Math.min(20, limit * 2)));
   if (timeRange) endpoint.searchParams.set('freshness', { day: 'pd', week: 'pw', month: 'pm', year: 'py' }[timeRange]);
-  const response = await fetch(endpoint, { headers: { Accept: 'application/json', 'X-Subscription-Token': process.env.BRAVE_API_KEY! }, signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) { markProviderFailure('Brave', response.status); return []; }
+  const response = await fetch(endpoint, { headers: { Accept: 'application/json', 'X-Subscription-Token': openSearchCredential(credential) }, signal: AbortSignal.timeout(8_000), redirect: 'error' });
+  if (!response.ok) { await response.body?.cancel(); markSearchFailure(credential, response.status); return []; }
   const payload = await response.json() as { web?: { results?: Array<{ title?: string; url?: string; description?: string; page_age?: string }> } };
   return (payload.web?.results || []).map(item => ({ title: item.title, url: item.url, content: plainHtml(item.description || ''), page_age: item.page_age }));
 }
@@ -349,14 +329,24 @@ function searchResult(results: TavilyResult[], advanced: boolean, provider: stri
 export async function searchWeb(args: WebSearchArgs): Promise<ToolResult> {
   const query = typeof args.query === 'string' ? args.query.trim().slice(0, 1000) : '';
   if (!query) return { content: 'A search query is required.', error: 'query_missing' };
+  const credentials = userSearchCredentials();
+  if (!credentials.length) return { content: 'Connect a search key in AI Providers → Web search to search the web.', error: 'search_key_missing', sources: [] };
   const advanced = args.searchDepth === 'advanced';
   const limit = boundedResults(args.maxResults, advanced ? 8 : 5);
   const freshness = searchFreshness(query, args.topic === 'news');
   const timeRange = args.timeRange || freshness.timeRange;
   const current = freshness.current || Boolean(args.timeRange);
-  if (process.env.TAVILY_API_KEY && providerAvailable('Tavily')) {
+  for (const credential of credentials) {
+    if (!searchCredentialAvailable(credential)) continue;
+    if (credential.providerId === 'brave') {
+      try {
+        const results = rankAndDedupe(withinFreshness(await searchBraveApi(credential, query, limit, timeRange), timeRange), limit, current && !freshness.current ? `latest ${query}` : query);
+        if (results.length) { markSearchSuccess(credential); return searchResult(results, advanced, 'Brave Search API'); }
+      } catch { markSearchFailure(credential); }
+      continue;
+    }
     try {
-      const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
+      const tvly = tavily({ apiKey: openSearchCredential(credential) });
       const queries = advanced ? focusedQueries(query).slice(0, 2) : [query];
       const attempts = await Promise.allSettled(queries.map(focusedQuery => tvly.search(focusedQuery, {
         searchDepth: advanced ? 'advanced' : 'basic', maxResults: Math.min(12, limit + 3),
@@ -368,32 +358,19 @@ export async function searchWeb(args: WebSearchArgs): Promise<ToolResult> {
       const responses = attempts.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
       const results = rankAndDedupe(withinFreshness(responses.flatMap(response => response.results || []) as TavilyResult[], timeRange), limit, current && !freshness.current ? `latest ${query}` : query);
       if (results.length) {
-        providerIssue.delete('Tavily');
+        markSearchSuccess(credential);
         const images = args.includeImages ? await validatedImages(responses.flatMap(response => response.images || []) as TavilyImage[], query) : [];
         return { ...searchResult(results, advanced, 'Tavily'), images };
       }
       const failure = attempts.find(result => result.status === 'rejected');
       if (failure?.status === 'rejected') {
         const status = Number(failure.reason?.status || failure.reason?.response?.status || String(failure.reason?.message || '').match(/\b(401|403|429|432|433|500|502|503)\b/)?.[1]) || undefined;
-        markProviderFailure('Tavily', status);
+        markSearchFailure(credential, status);
       }
-    } catch { markProviderFailure('Tavily'); }
+    } catch { markSearchFailure(credential); }
   }
-  if (process.env.BRAVE_API_KEY && providerAvailable('Brave')) {
-    try {
-      const results = rankAndDedupe(withinFreshness(await searchBraveApi(query, limit, timeRange), timeRange), limit, current && !freshness.current ? `latest ${query}` : query);
-      if (results.length) return searchResult(results, advanced, 'Brave Search API');
-    } catch { markProviderFailure('Brave'); }
-  }
-  const results = await keylessWebResults(query, limit, current);
-  if (results.length) return searchResult(results, advanced, 'DuckDuckGo / Brave web index');
-  const issues = [...providerIssue.values()].join(' ');
-  if (current) return { content: `${issues} Fresh web results are unavailable. The requested current information could not be verified; encyclopedia pages are not a substitute for live scores, upcoming schedules or news.`, error: 'fresh_search_unavailable', sources: [] };
-  let background: TavilyResult[] = [];
-  try { background = await searchWikipediaWeb(query, Math.min(limit, 2)); } catch {}
-  if (!background.length) { try { background = await searchDuckDuckGoInstant(query, Math.min(limit, 2)); } catch {} }
-  return background.length ? searchResult(rankAndDedupe(background, Math.min(limit, 2), query), advanced, 'Encyclopedia fallback', true)
-    : { content: `${issues} No attributable web results were available.`, error: 'search_unavailable', sources: [] };
+  const issues = searchCredentialIssues();
+  return { content: `${issues} No connected search key returned usable results. Check your search keys in AI Providers → Web search.`, error: current ? 'fresh_search_unavailable' : 'search_unavailable', sources: [] };
 }
 
 export function registerWebSearchTools(): void {
@@ -470,28 +447,13 @@ export function registerWebSearchTools(): void {
       if (!query) {
         return { content: 'Error: query is required.', error: 'query missing' };
       }
-      try {
-        const apiKey = process.env.TAVILY_API_KEY;
-        if (apiKey) {
-          const tvly = tavily({ apiKey });
-          const response = await tvly.search(query, { 
-            searchDepth,
-            maxResults: boundedResults(maxResults),
-            includeImages,
-            includeDomains: ['arxiv.org', 'scholar.google.com', 'pubmed.ncbi.nlm.nih.gov', 'semanticscholar.org', 'nature.com', 'science.org'] 
-          });
-          if (!response || !response.results || response.results.length === 0) {
-            return { content: 'No academic results found.' };
-          }
-          const results = rankAndDedupe(response.results as TavilyResult[], boundedResults(maxResults), query);
-          const images = includeImages ? await validatedImages((response.images || []) as TavilyImage[], query) : [];
-          const sources = results.map((result) => ({ url: result.url!, title: result.title!, content: result.content || '' }));
-          return { content: formatResults(results, true), images, sources };
-        }
-        return { content: 'Error: TAVILY_API_KEY is required for academic search.', error: 'missing key' };
-      } catch (err: any) {
-        return { content: `Error during academic search: ${err.message}`, error: err.message };
-      }
+      const domains = ['arxiv.org', 'scholar.google.com', 'pubmed.ncbi.nlm.nih.gov', 'semanticscholar.org', 'nature.com', 'science.org'];
+      const result = await searchWeb({ query: `${String(query).slice(0, 600)} (${domains.map(domain => `site:${domain}`).join(' OR ')})`, maxResults, searchDepth, includeImages });
+      const sources = (result.sources || []).filter(source => {
+        try { const host = new URL(source.url).hostname; return domains.some(domain => host === domain || host.endsWith(`.${domain}`)); } catch { return false; }
+      });
+      if (!sources.length) return { content: 'No attributable academic results were available.', error: result.error || 'academic_search_unavailable', sources: [] };
+      return { content: sources.map((source, index) => `[${index + 1}] ${source.title}\n${source.url}\n${source.content || ''}`).join('\n\n'), sources, images: result.images };
     },
     options
   );

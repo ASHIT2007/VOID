@@ -120,7 +120,7 @@ export default function ExecutionSettings({ view, config, models, providers, sav
       </section>}
 
       <motion.div key={view} initial={reduced ? false : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={transition} className="space-y-5">
-        {view === 'orchestration' ? <OrchestrationTree config={draft} models={models} providers={providers} onChange={update} onConnect={onConnect} disabled={saving} dirty={dirty} onCheckHealth={checkHealth ? retryHealth : undefined} /> : <>
+        {view === 'orchestration' ? <OrchestrationTree config={draft} models={models} providers={providers} onChange={update} onConnect={onConnect} disabled={saving} onCheckHealth={checkHealth ? retryHealth : undefined} /> : <>
           <section className={`${panel} overflow-hidden p-5`}>
             <div className="flex items-center justify-between text-[10px] text-neutral-500"><Route size={14} aria-hidden="true" /><span>{dirty ? 'Draft' : ''}</span></div>
             <div tabIndex={0} className="mt-6 flex gap-2 overflow-x-auto pb-4 focus-visible:outline focus-visible:outline-white" aria-label="Model routing sequence">

@@ -1,4 +1,5 @@
 import { registerTool, type ToolImage, type ToolResult, type ToolOptions } from '../tool-registry.js';
+import { userSearchCredentials, searchCredentialAvailable, openSearchCredential, markSearchFailure, markSearchSuccess } from '../../ai/search-credentials.js';
 
 interface ImageSearchArgs {
   query: string;
@@ -583,32 +584,35 @@ export function registerImageSearchTools(): void {
     },
     async (args: Record<string, unknown>): Promise<ToolResult> => {
       const { query, maxResults = 5 } = args as unknown as ImageSearchArgs;
+      if (!userSearchCredentials().length) return { content: 'Connect a search key in AI Providers → Web search to look up web images.', error: 'search_key_missing', images: [] };
       
       if (!query) {
         return { content: 'Error: query is required.', error: 'query missing' };
       }
 
       try {
-        const braveKey = process.env.BRAVE_API_KEY;
+        const credentials = userSearchCredentials('brave').filter(searchCredentialAvailable);
         const limit = Math.max(3, Math.min(Number(maxResults) || 6, 12));
-        if (!braveKey) return await searchKeylessImages(query, limit);
-        const authoritativePromise = searchWikimediaImages(query, Math.min(limit, 5)).catch(() => ({
-          content: '',
-          images: [] as ToolImage[],
-        }));
-        const res = await fetch(`https://api.search.brave.com/res/v1/images/search?q=${encodeURIComponent(query)}&count=${limit}&safesearch=strict`, {
+        if (!credentials.length) return { content: 'No connected Brave image-search key is available.', error: 'image_search_unavailable', images: [] };
+        let res: Response | undefined;
+        for (const credential of credentials) {
+          try {
+            const response = await fetch(`https://api.search.brave.com/res/v1/images/search?q=${encodeURIComponent(String(query).slice(0, 600))}&count=${limit}&safesearch=strict`, {
           signal: AbortSignal.timeout(10_000),
           headers: {
             'Accept': 'application/json',
             'Accept-Encoding': 'gzip',
-            'X-Subscription-Token': braveKey
+            'X-Subscription-Token': openSearchCredential(credential)
           }
-        });
-
-        if (!res.ok) return await authoritativePromise;
+            });
+            if (!response.ok) { markSearchFailure(credential, response.status); await response.body?.cancel(); continue; }
+            markSearchSuccess(credential); res = response; break;
+          } catch { markSearchFailure(credential); }
+        }
+        if (!res) return { content: 'Connected image-search keys are unavailable. Check your search settings.', error: 'image_search_unavailable', images: [] };
 
         const data = await res.json() as any;
-        if (!data.results || data.results.length === 0) return await authoritativePromise;
+        if (!data.results || data.results.length === 0) return { content: 'No images were returned by the connected search provider.', images: [] };
 
         // Brave safe-search is only the first layer. The media orchestrator
         // performs the product-specific policy and relevance filtering before
@@ -644,25 +648,20 @@ export function registerImageSearchTools(): void {
           verified: true,
         }));
 
-        const authoritative = await authoritativePromise;
         const imagesToReturn = [...new Map(
-          [...(authoritative.images || []), ...braveImages].map((image) => [image.url, image]),
+          braveImages.map((image) => [image.url, image]),
         ).values()];
         const textContent = imagesToReturn.map((image, i) =>
           `[${i + 1}] Title: ${image.title || 'Image'}\nURL: ${image.url}\nSource page: ${image.sourceUrl || 'Unavailable'}\nAttribution: ${image.attribution || 'Source website'}`
         ).join('\n\n');
 
-        if (imagesToReturn.length === 0) return authoritative;
+        if (imagesToReturn.length === 0) return { content: 'No usable images were returned by the connected search provider.', images: [] };
         return { 
           content: `Found ${imagesToReturn.length} images:\n\n${textContent}`,
           images: imagesToReturn
         };
-      } catch (err: any) {
-        try {
-          return await searchKeylessImages(query, Math.max(3, Math.min(Number(maxResults) || 6, 12)));
-        } catch (fallbackError: any) {
-          return { content: `Error during image search: ${fallbackError.message || err.message}`, error: fallbackError.message || err.message };
-        }
+      } catch {
+        return { content: 'The connected image search could not finish.', error: 'image_search_unavailable', images: [] };
       }
     },
     options

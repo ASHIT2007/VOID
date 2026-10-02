@@ -25,4 +25,15 @@ describe('orchestration provider health', () => {
     vi.mocked(Date.now).mockReturnValue(61_001);
     expect(getByokRuntimeHealth('user-d', 'key-d', 'model').status).toBe('rate_limited');
   });
+  it('does not let an overlapping successful probe erase a newer failed turn', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    recordByokOutcome('race-user', 'groq', 'gpt-oss-120b', false, 0, { connectionId: 'race-key', error: { status: 429 } });
+    vi.mocked(Date.now).mockReturnValue(2000);
+    recordByokOutcome('race-user', 'groq', 'gpt-oss-120b', true, 100, { connectionId: 'race-key', source: 'probe', startedAt: 500 });
+    expect(getByokRuntimeHealth('race-user', 'race-key', 'gpt-oss-120b').status).toBe('rate_limited');
+    vi.mocked(Date.now).mockReturnValue(62_000);
+    recordByokOutcome('race-user', 'groq', 'gpt-oss-120b', true, 100, { connectionId: 'race-key', source: 'probe', startedAt: 61_001 });
+    expect(getByokRuntimeHealth('race-user', 'race-key', 'gpt-oss-120b').status).toBe('healthy');
+  });
+
 });

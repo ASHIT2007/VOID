@@ -400,11 +400,11 @@ export async function runMediaWorker(options: AgentLoopOptions & { responseText?
   if (!semantic.should_search || !subject) return omit(semantic.reason);
   const decision: MediaIntentDecision = {
     show_images: true, visual_intent: semantic.category === 'explicit_request' ? 'explicit' : 'implicit',
-    image_query: subject, image_count: 3, placement: 'after_intro', reason: semantic.reason,
-    considered: true, category: semantic.category === 'explicit_request' ? 'explicit' : 'person_or_subject', renderPlacement: 'inline',
+    image_query: subject, image_count: 3, placement: 'top', reason: semantic.reason,
+    considered: true, category: semantic.category === 'explicit_request' ? 'explicit' : 'person_or_subject', renderPlacement: 'lead',
   };
   const plan: MediaPlan = { decision: 'search', subject, reason: semantic.reason,
-    queries: [subject], altText: `Reference image of ${subject}`, placement: 'inline', safetyCategory: 'none' };
+    queries: [subject], altText: `Reference image of ${subject}`, placement: 'lead', safetyCategory: 'none' };
   options.signal?.throwIfAborted();
 
   const credentials = userSearchCredentials();

@@ -93,7 +93,8 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
   const plan = createExecutionPlan({ message: options.message || '', mode: attachmentGrounded ? 'normal' : options.mode, reasoningEffort: effort.effective, attachmentCount: options.attachments?.length, maxAgents: attachmentGrounded ? 1 : Math.min(options.maxAgents ?? budget.maxSpecialists, availableChatRouteCount()) });
   const fileTools = requestedFileTools(options.message || '');
   const longFormTask = fileTools.length > 0 || Boolean(effort.assessment.questionSet) || plan.artifactKind === 'report' || plan.artifactKind === 'web';
-  const configuredStageCount = currentByokContext()?.execution?.roles.filter(role => role.kind !== 'answer_writer').length || 0;
+  const configured = currentByokContext()?.execution;
+  const configuredStageCount = configured?.roles.length ? 1 + configured.roles.filter(role => role.kind !== 'answer_writer').length : 0;
   const responseBudgetMs = (fileTools.includes('generate_presentation') ? 660_000 : effort.assessment.questionSet
     ? effort.effective === 'high' ? 210_000 : effort.effective === 'medium' ? 160_000 : 110_000
     : plan.intent === 'artifact' || fileTools.length
@@ -101,9 +102,10 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
     : Math.max(hasVisualInput ? 100_000 : 0, effort.effective === 'high' ? 95_000 : budget.responseMs, !options.isVoice ? budget.responseMs + MEDIA_WORKER_MS : 0))
     + Math.min(configuredStageCount, 6) * budget.workerMs;
   const info = { requested: effort.requested, effective: effort.effective, reason: effort.reason,
-    agentCount: plan.agents.length === 1 ? 1 : plan.agents.length + 1, searchMode: attachmentGrounded ? 'off' as const : effort.searchMode, simple: effort.assessment.simple };
+    agentCount: configuredStageCount ? configuredStageCount + 1 : plan.agents.length === 1 ? 1 : plan.agents.length + 1, searchMode: attachmentGrounded ? 'off' as const : effort.searchMode, simple: effort.assessment.simple };
   options.onEvent({ type: 'effort', ...info });
   let failure: string | undefined;
+  let routingExhausted = false;
   let completed = false;
   let answerText = '';
   let paused = false;
@@ -146,6 +148,7 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
         onEvent: event => {
           if (signal.aborted && event.type !== 'done') return;
           if (event.type === 'error') { failure = event.message; return; }
+          if (event.type === 'model_route' && event.state === 'exhausted') routingExhausted = true;
           if (event.type === 'agent_result') evidence.push(event.summary);
           if (event.type === 'media') verifiedMedia = event;
           if (event.type === 'sources') evidence.push(...event.sources.filter(source => source.snippet?.trim()).map(source => `${source.title || 'Source'}: ${source.snippet} (${source.url})`));
@@ -177,6 +180,9 @@ export async function runEffortTurn(options: Omit<AgentLoopOptions, 'reasoningEf
     options.onEvent({ type: 'done', fullText: answerText });
     return;
   }
+  // An exhausted configured route must not trigger another hidden model pass
+  // or turn research snippets into an apparent model-written answer.
+  if (routingExhausted) { options.onEvent({ type: 'error', message: failure || 'No working models or routing models are available.' }); return; }
   if (fileTools.length || isDiagramRequest(options.message || '') || isStudyRoadmapRequest(options.message || '')) {
     options.onEvent({ type: 'error', message: failure || 'The requested file could not be completed. Please retry; no image was substituted.' });
     return;

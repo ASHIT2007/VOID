@@ -40,7 +40,9 @@ import { presentationDelivery, requestedFileTools, fileGenerationDirective } fro
 
 // ── Event types emitted by the agent loop ───────────────────────────────
 
-export type AgentEvent =
+export type ExecutionIdentity = { agentId?: string; role?: string; roleLabel?: string; uiName?: string; modelId?: string; connectedModelId?: string; platform?: string; target?: string };
+
+export type AgentEvent = (
   | ClientToolEvent
   | { type: 'usage_record'; id: string; providerId: string; modelId: string; inputTokens: number; outputTokens: number; estimated: boolean }
   | { type: 'effort'; requested: 'auto' | 'low' | 'medium' | 'high'; effective: 'low' | 'medium' | 'high'; reason: string; agentCount: number; searchMode: 'off' | 'standard' | 'advanced'; simple: boolean }
@@ -57,16 +59,19 @@ export type AgentEvent =
   | { type: 'media'; query: string; placement: 'lead' | 'inline'; images: ToolImage[] }
   | { type: 'model_runtime'; uiName: string; modelId: string; platform: string; attempt: number; reason: 'selected' | 'fallback'; agentId?: string; isSynthesizer?: boolean }
   | { type: 'model_fallback'; uiName: string }
+  | { type: 'model_route'; state: 'fallback' | 'exhausted'; fromModel: string; toModel?: string; message: string }
   | { type: 'agent_plan'; intent: string; agents: Array<{ id: string; role: string; label: string }> }
   | { type: 'agent_status'; agentId: string; role: string; status: 'started' | 'completed' | 'failed'; label: string; operation?: string; target?: string }
   | { type: 'agent_result'; agentId: string; role: string; label: string; status: 'ok' | 'partial' | 'failed'; summary: string; confidence: number; findingCount: number; sourceCount: number }
   | { type: 'confirmation_required'; toolName: string; args: Record<string, unknown>; requestId: string }
   | { type: 'done'; fullText: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }) & ExecutionIdentity;
 
 import { logDebug } from '../debug_logger.js';
 
 export interface AgentLoopOptions {
+  /** Public execution identity, independent of private model reasoning. */
+  executionIdentity?: ExecutionIdentity;
   sessionId?: string;
   message?: string;
   mode: 'normal' | 'deep_research';
@@ -309,7 +314,10 @@ function numberedQuestionLabels(text: string): string[] {
  * 4. If LLM returns text only → emit done
  */
 export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
-  const { mode, preferredModel, onEvent } = options;
+  const { mode, preferredModel } = options;
+  const executionIdentity = options.executionIdentity || { agentId: 'primary', role: 'primary', roleLabel: 'Primary' };
+  let activeModel: ExecutionIdentity = {};
+  const onEvent = (event: AgentEvent) => options.onEvent({ ...executionIdentity, ...activeModel, ...event });
   const reasoningEffort = options.reasoningEffort ?? 'medium';
   const searchMode = options.searchMode ?? 'standard';
   const effortIterations = reasoningEffort === 'high' ? 16 : reasoningEffort === 'low' ? 6 : 10;
@@ -451,6 +459,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
       let success = false;
       let lastError: any = null;
       const attemptedProviders: string[] = [];
+      let lastAttemptedModel: string | undefined;
+      const context = currentByokContext();
+      const assignedId = context?.assignedModelId || context?.execution?.primaryModelId || context?.manualModelId;
+      const assigned = context?.models.find(model => model.id === assignedId);
 
       // Model retry and fallback loop. Each pass prefers distinct models; a
       // later recovery pass may rotate credentials again if necessary.
@@ -461,7 +473,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
         let route;
         let useTools = schemas.length > 0;
         try {
-          route = routeRequest(routingTokenEstimate, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, requiresVision, schemas.length > 0, allowedModelIds);
+          route = routeRequest(routingTokenEstimate, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, requiresVision, schemas.length > 0 && !context?.execution, allowedModelIds);
           logDebug(`[AgentLoop] routeRequest with preferredModel=${preferredModel} selected: ${route.modelId} (Provider: ${route.provider.constructor.name})`);
         } catch (err) {
           logDebug(`[AgentLoop] routeRequest with tools failed: ` + String(err));
@@ -481,8 +493,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
         const executionSchemas = route.toolsAllowed === false ? [] : schemas;
         useTools = executionSchemas.length > 0 && route.supportsTools && !textOnlyRoutes.has(routeId);
         const publicModelName = allowedModelLabels.get(modelId) || displayName;
+        const connectedModelId = context?.models.find(item => item.modelId === modelId && item.connectionId === byokConnectionId(context, keyId))?.id;
+        activeModel = { uiName: publicModelName, modelId, platform, connectedModelId };
         attemptedProviders.push(platform);
-        const isFallback = attempt > 0 || (preferredModel !== undefined && modelId !== preferredModel);
+        const isFallback = Boolean(lastAttemptedModel) || Boolean(assignedId && assignedId !== connectedModelId) || (preferredModel !== undefined && modelId !== preferredModel);
+        if (isFallback) {
+          const fromModel = lastAttemptedModel || assigned?.displayName || assignedId || String(preferredModel || 'Selected model');
+          onEvent({ type: 'model_route', state: 'fallback', fromModel, toModel: publicModelName,
+            message: `${executionIdentity.roleLabel || 'Primary'} (${fromModel}) is unavailable; routing to ${publicModelName}.` });
+        }
         onEvent({
           type: 'model_runtime',
           uiName: publicModelName,
@@ -682,6 +701,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
             attempt--; continue;
           }
           lastError = streamErr;
+          lastAttemptedModel = publicModelName;
           const byok = currentByokContext();
           if (byok) recordByokOutcome(byok.userId, platform, modelId, false, 0, { connectionId: byokConnectionId(byok, keyId), error: streamErr });
           console.warn(`[AgentLoop] Model ${modelId} (${displayName}) error: ${streamErr.message}. Attempt ${attempt + 1}/${maxProviderAttempts}`);
@@ -754,13 +774,19 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
       }
 
       if (!success) {
+        const roleName = executionIdentity.roleLabel || 'Primary';
+        const fromModel = lastAttemptedModel || assigned?.displayName || assignedId || 'selected model';
+        const message = context?.execution
+          ? `${roleName} (${fromModel}) is unavailable. ${!context.execution.fallbackModelIds.length ? 'No routing models are configured' : context.fallbackEnabled === false ? 'Routing is disabled' : 'No working, compatible routing models are available'}. Choose a working model or update Routing in AI & Providers.`
+          : `No working, compatible models are available for ${roleName.toLowerCase()}. Connect a working model or update Routing in AI & Providers.`;
+        onEvent({ type: 'model_route', state: 'exhausted', fromModel, message });
         if (bestPartialAnswer) {
           onEvent({ type: 'response_reset' });
           onEvent({ type: 'text_delta', content: bestPartialAnswer });
           onEvent({ type: 'done', fullText: bestPartialAnswer });
           return;
         }
-        throw new Error(publicFailureMessage(lastError || new Error('All models exhausted in agent loop'), attemptedProviders));
+        throw new Error(context ? message : publicFailureMessage(lastError || new Error('All models exhausted in agent loop'), attemptedProviders));
       }
 
       const toolCalls = Array.from(toolCallMap.values());

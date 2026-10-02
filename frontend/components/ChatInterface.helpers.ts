@@ -4,6 +4,7 @@ import { VISUAL_GENERATION_DIRECTIVE } from '../lib/design/generation-prompt';
 import { extractToolProtocol, requestsToolExample } from '@void/shared/tool-protocol.mjs';
 import type { ProgressLog } from '../lib/chat-progress';
 import { presentationDelivery, requestedFileTools } from '@void/shared/file-intent.mjs';
+import { normalizeImageIntent } from '@void/shared/chat-intent.mjs';
 
 export type ThinkingEffort = "low" | "medium" | "high";
 
@@ -122,6 +123,10 @@ export function hasRenderablePosterContent(data: PresentationData): boolean {
 }
 
 export function isNaturalImageGeneration(message: string): boolean {
+  const original = message;
+  message = normalizeImageIntent(message);
+  if (/\b(?:do not|don't|never)\s+(?:generate|create|draw|render|make)\b/i.test(message)
+    || /^\s*(?:(?:please|can you|could you|would you)\s+)?(?:explain|describe|tell me|what|why|how|teach|write)\b/i.test(original)) return false;
   if (requestedFileTools(message).length || /\b(?:diagrams?|mind[ -]?maps?|flowcharts?|mermaid|charts?|graphs?)\b/i.test(message)) return false;
   if (isRasterPosterCreationRequest(message)) return true;
   if (isStudioCreationRequest(message)) return false;
@@ -390,7 +395,7 @@ export function visibleProgressLogs(logs: ChatProgressLog[] = []): ChatProgressL
   const result: ChatProgressLog[] = [];
   for (const log of logs) {
     if (!log || !log.action) continue;
-    const internal = log.kind !== 'task' && internalProgress.test(log.action);
+    const internal = !log.roleLabel && !log.role && log.kind !== 'task' && log.kind !== 'routing' && internalProgress.test(log.action);
     const action = internal ? /synthes|writ|finaliz/i.test(log.action) ? "Writing the response"
       : /research|search/i.test(log.action) ? "Researching sources"
       : /verif|fact.?check/i.test(log.action) ? "Checking the details"

@@ -6,6 +6,19 @@ export function defaultExecutionConfig(primaryModelId = null) {
   return { version: 1, primaryModelId, roles: [], fallbackModelIds: [] };
 }
 
+// A device preference selects the coordinator, without discarding its team.
+export function executionWithPrimary(config, primaryModelId) {
+  return config ? { ...config, primaryModelId, fallbackModelIds: config.fallbackModelIds.filter(id => id !== primaryModelId) } : undefined;
+}
+
+export function suggestedRoleModel(config, eligibleIds) {
+  const usage = new Map(eligibleIds.map(id => [id, 0]));
+  for (const id of [config.primaryModelId, ...config.roles.map(role => role.modelId)]) {
+    if (usage.has(id)) usage.set(id, usage.get(id) + 1);
+  }
+  return [...eligibleIds].sort((a, b) => usage.get(a) - usage.get(b))[0] || config.primaryModelId;
+}
+
 export function parseExecutionConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid execution settings.');
   if (value.version !== 1 || !(value.primaryModelId === null || typeof value.primaryModelId === 'string' && MODEL_ID.test(value.primaryModelId))) throw new Error('Choose a primary model.');

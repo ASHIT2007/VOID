@@ -82,6 +82,20 @@ describe('answer recovery ownership', () => {
     expect(events.some(e => e.type === 'response_reset')).toBe(false);
     expect(events.at(-1)?.type).toBe('done');
   });
+  it('returns an exhausted route error without hidden recovery or an evidence-only substitute', async () => {
+    const message = 'Primary (GPT-4.1) is unavailable. No routing models are configured.';
+    mocks.adaptive.mockImplementation(async options => {
+      options.onEvent({ type: 'sources', sources: [{ title: 'Reference', url: 'https://example.com', snippet: 'A researcher found a useful snippet.' }] });
+      options.onEvent({ type: 'model_route', state: 'exhausted', fromModel: 'GPT-4.1', message });
+      options.onEvent({ type: 'error', message });
+    });
+    const events: AgentEvent[] = [];
+    await runEffortTurn({ message: 'Explain telescope designs', mode: 'normal', onEvent: event => events.push(event) });
+    expect(mocks.loop).not.toHaveBeenCalled();
+    expect(mocks.media).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: 'error', message });
+    expect(events.some(event => ['done', 'effort_recovery', 'text_delta'].includes(event.type))).toBe(false);
+  });
   it('recovers text with no additional tool loop and never emits missing snippets', async () => {
     mocks.adaptive.mockImplementation(async (options) => {
       options.onEvent({ type: 'sources', sources: [{ title: 'Reference', url: 'https://example.com' }] });

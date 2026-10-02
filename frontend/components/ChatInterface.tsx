@@ -28,7 +28,7 @@ import {
 } from "./ChatInterface.helpers";
 import ThinkingEnergy from "./ThinkingEnergy";
 import { responsePhaseForEvent, type ResponsePhase } from "@/lib/response-stream";
-import { progressLogForEvent, type ProgressLog } from "@/lib/chat-progress";
+import { compactProgressTrace, progressLogForEvent, type ProgressLog } from "@/lib/chat-progress";
 import { extractToolProtocol } from '@void/shared/tool-protocol.mjs';
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -159,19 +159,9 @@ function mergeMediaPayload(previous: MediaPayload | undefined, incoming: any): M
   if (!images.length) return previous;
   return {
     query: previous?.query || (typeof incoming.query === "string" ? incoming.query : "Web images"),
-    placement: previous?.placement === "lead" || incoming.placement === "lead" ? "lead" : "inline",
+    placement: "lead",
     images,
   };
-}
-
-type AgentResultEvent = {
-  confidence?: number;
-  label?: string;
-  summary?: string;
-};
-
-function agentResultLog(data: AgentResultEvent): { action: string; query: string } {
-  return { action: "Research findings ready", query: visibleThinkingText(data.summary || null) || "" };
 }
 
 async function authenticatedJsonHeaders(): Promise<Record<string, string>> {
@@ -1037,7 +1027,7 @@ function SearchImageCard({
   roundedClass = "rounded-xl sm:rounded-2xl",
   onPreview,
   loadedUrls,
-  aspectRatios,
+  failedUrls,
   onLoad,
   onError,
 }: {
@@ -1048,13 +1038,14 @@ function SearchImageCard({
   roundedClass?: string;
   onPreview?: (image: SearchImagePreview, index: number) => void;
   loadedUrls: Set<string>;
-  aspectRatios: Record<string, number>;
+  failedUrls: Set<string>;
   onLoad: (url: string, e: React.SyntheticEvent<HTMLImageElement>) => void;
   onError: (url: string) => void;
 }) {
   const isLoaded = loadedUrls.has(image.originalUrl);
-  const ratio = aspectRatios[image.originalUrl];
-  const isPortrait = typeof ratio === "number" ? ratio < 0.85 : false;
+  const isFailed = failedUrls.has(image.originalUrl);
+  const ratio = image.width && image.height ? image.width / image.height : undefined;
+  const isPortrait = ratio === undefined || ratio < 0.85;
   const [useDirectUrl, setUseDirectUrl] = React.useState(false);
   const resolvedSrc = useDirectUrl ? image.originalUrl : image.displayUrl;
 
@@ -1070,69 +1061,35 @@ function SearchImageCard({
   };
 
   return (
-    <motion.figure
-      initial={{ opacity: 0, y: 14, scale: 0.95 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{
-        duration: 0.45,
-        delay: Math.min(index * 0.08, 0.4),
-        ease: [0.22, 1, 0.36, 1],
-      }}
-      whileHover={{ y: -3, transition: { duration: 0.2 } }}
+    <figure
       className={`relative group overflow-hidden ${roundedClass} bg-zinc-100 dark:bg-[#18181b] border border-black/[0.08] dark:border-white/[0.08] shadow-sm hover:shadow-lg hover:border-black/20 dark:hover:border-white/20 ${heightClass} transition-shadow duration-300`}
     >
       <button
         type="button"
+        disabled={isFailed}
         onClick={() => onPreview ? onPreview({ ...image, displayUrl: resolvedSrc }, index) : window.open(image.originalUrl, "_blank", "noopener,noreferrer")}
         aria-label={`Preview: ${image.title || image.alt || query || `Image ${index + 1}`}`}
         className="relative block w-full h-full text-left outline-none cursor-pointer overflow-hidden"
       >
-        <AnimatePresence>
-          {!isLoaded && (
-            <motion.div
-              initial={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.3 }}
-              className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-zinc-100 dark:bg-[#1e1e22] overflow-hidden"
-            >
-              {/* Shimmer wave */}
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-black/[0.05] dark:via-white/[0.07] to-transparent bg-[length:200%_100%] animate-[shimmer_1.8s_infinite]" />
-              <div className="relative z-10 flex flex-col items-center gap-1.5 opacity-40">
-                <ImageIcon className="w-5 h-5 text-zinc-500 dark:text-zinc-400 animate-pulse" />
-                <span className="text-[10px] font-medium tracking-wider text-zinc-500 dark:text-zinc-400 uppercase">
-                  Loading
-                </span>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {(!isLoaded || isFailed) && <div role="status" className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 bg-zinc-100 text-zinc-500 dark:bg-[#262626] dark:text-zinc-400">
+          <ImageIcon className={`size-5 ${isFailed ? '' : 'animate-pulse motion-reduce:animate-none'}`} aria-hidden="true" />
+          <span className="text-[10px]">{isFailed ? 'Image unavailable' : 'Loading image'}</span>
+        </div>}
 
-        {/* Ambient blurred backdrop for portrait/vertical images */}
-        {isPortrait && (
-          <img
-            src={resolvedSrc}
-            alt=""
-            aria-hidden="true"
-            className={`absolute inset-0 w-full h-full object-cover blur-xl scale-110 pointer-events-none select-none transition-opacity duration-700 ${
-              isLoaded ? "opacity-35" : "opacity-0"
-            }`}
-          />
-        )}
-
-        {/* Main image: smooth de-blur and scale reveal */}
+        {/* Only opacity changes when decoded; geometry and fit stay fixed. */}
         <img
           src={resolvedSrc}
           alt={image.alt || image.title || query || `Web image ${index + 1}`}
           loading="eager"
           decoding="async"
-          className={`w-full h-full transition-all duration-700 ease-out group-hover:scale-[1.03] ${
+          className={`w-full h-full transition-opacity duration-200 motion-reduce:transition-none ${
             isPortrait
-              ? "relative z-10 object-contain drop-shadow-sm"
+              ? "object-contain"
               : "object-cover object-top"
           } ${
             isLoaded
-              ? "opacity-100 scale-100 blur-0"
-              : "opacity-0 scale-[1.04] blur-xs"
+              ? "opacity-100"
+              : "opacity-0"
           }`}
           onLoad={(e) => onLoad(image.originalUrl, e)}
           onError={handleDisplayError}
@@ -1150,7 +1107,7 @@ function SearchImageCard({
           </div>
         )}
       </button>
-    </motion.figure>
+    </figure>
   );
 }
 
@@ -1160,26 +1117,22 @@ export function WebSearchImageGrid({
   placement = "inline",
   onPreview,
   onReady,
+  pending = false,
 }: {
   images?: Array<string | WebMediaImage>;
   query?: string;
   placement?: "lead" | "inline";
   onPreview?: (image: SearchImagePreview, index: number) => void;
   onReady?: () => void;
+  pending?: boolean;
 }) {
   const [failedUrls, setFailedUrls] = useState<Set<string>>(new Set());
   const [loadedUrls, setLoadedUrls] = useState<Set<string>>(new Set());
-  const [aspectRatios, setAspectRatios] = useState<Record<string, number>>({});
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
-  const handleImageLoad = useCallback((url: string, e: React.SyntheticEvent<HTMLImageElement>) => {
-    const img = e.currentTarget;
-    if (img.naturalWidth && img.naturalHeight) {
-      const ratio = img.naturalWidth / img.naturalHeight;
-      setAspectRatios((prev) => (prev[url] === ratio ? prev : { ...prev, [url]: ratio }));
-    }
+  const handleImageLoad = useCallback((url: string) => {
     setLoadedUrls((prev) => new Set([...prev, url]));
   }, []);
 
@@ -1201,13 +1154,15 @@ export function WebSearchImageGrid({
       }));
   }, [images]);
 
-  const visibleImages = rawCandidates.filter((img) => !failedUrls.has(img.originalUrl));
+  // Keep failed cards in their fixed slots so failures never change the grid
+  // or remount neighbouring images while an answer is streaming.
+  const visibleImages = rawCandidates;
 
   useEffect(() => {
-    if (rawCandidates.length > 0 && loadedUrls.size + failedUrls.size >= rawCandidates.length) {
+    if (rawCandidates.length > 0 && rawCandidates.every(image => loadedUrls.has(image.originalUrl) || failedUrls.has(image.originalUrl))) {
       onReady?.();
     }
-  }, [rawCandidates.length, loadedUrls.size, failedUrls.size, onReady]);
+  }, [rawCandidates, loadedUrls, failedUrls, onReady]);
 
   const checkScroll = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -1235,22 +1190,25 @@ export function WebSearchImageGrid({
     el.scrollBy({ left: direction === "left" ? -distance : distance, behavior: "smooth" });
   };
 
-  if (!visibleImages.length) return null;
+  if (!visibleImages.length) return pending ? <div role="status" aria-label="Loading web images" className="my-6 sm:my-7 w-full">
+    <p className="mb-2.5 truncate px-0.5 text-xs font-semibold text-zinc-600 dark:text-zinc-400">Finding reference images</p>
+    <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5">{[0, 1, 2].map(id => <div key={id} className="h-40 rounded-2xl bg-neutral-200 animate-pulse motion-reduce:animate-none dark:bg-[#262626] sm:h-48 md:h-52" />)}</div>
+  </div> : null;
 
   const count = visibleImages.length;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
       transition={{ duration: 0.35, ease: "easeOut" }}
       className="relative clear-both my-6 sm:my-7 w-full max-w-full select-none"
     >
       <div className="flex items-center justify-between mb-2.5 px-0.5">
-        <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+        <span className="min-w-0 truncate text-xs font-semibold text-zinc-700 dark:text-zinc-300">
           {query ? `Web images: ${query}` : "Related web images"}
         </span>
-        <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500">
+        <span className="shrink-0 pl-2 text-[11px] font-medium text-zinc-400 dark:text-zinc-500">
           {count} {count === 1 ? "image" : "images"}
         </span>
       </div>
@@ -1262,11 +1220,11 @@ export function WebSearchImageGrid({
             image={visibleImages[0]}
             index={0}
             query={query}
-            heightClass="h-48 sm:h-56 md:h-64"
+            heightClass="h-40 sm:h-48 md:h-52"
             roundedClass="rounded-2xl"
             onPreview={onPreview}
             loadedUrls={loadedUrls}
-            aspectRatios={aspectRatios}
+            failedUrls={failedUrls}
             onLoad={handleImageLoad}
             onError={handleImageError}
           />
@@ -1286,7 +1244,7 @@ export function WebSearchImageGrid({
               roundedClass="rounded-2xl"
               onPreview={onPreview}
               loadedUrls={loadedUrls}
-              aspectRatios={aspectRatios}
+              failedUrls={failedUrls}
               onLoad={handleImageLoad}
               onError={handleImageError}
             />
@@ -1303,11 +1261,11 @@ export function WebSearchImageGrid({
               image={image}
               index={index}
               query={query}
-              heightClass="h-28 xs:h-36 sm:h-44 md:h-48"
+              heightClass="h-40 sm:h-48 md:h-52"
               roundedClass="rounded-xl sm:rounded-2xl"
               onPreview={onPreview}
               loadedUrls={loadedUrls}
-              aspectRatios={aspectRatios}
+              failedUrls={failedUrls}
               onLoad={handleImageLoad}
               onError={handleImageError}
             />
@@ -1351,10 +1309,10 @@ export function WebSearchImageGrid({
                   image={image}
                   index={index}
                   query={query}
-                  heightClass="h-28 xs:h-36 sm:h-44 md:h-48"
+                  heightClass="h-40 sm:h-48 md:h-52"
                   onPreview={onPreview}
                   loadedUrls={loadedUrls}
-                  aspectRatios={aspectRatios}
+                  failedUrls={failedUrls}
                   onLoad={handleImageLoad}
                   onError={handleImageError}
                 />
@@ -2880,7 +2838,6 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
 }) {
   const { theme } = useTheme();
   const [animateGeneratedText] = React.useState(Boolean(msg?.isStreaming));
-  const [loadedMediaKey, setLoadedMediaKey] = React.useState("");
   const rawContent = typeof msg?.content === "string" ? msg.content : "";
   const { thinkContent, displayContent: cleanDisplayContent } = extractThinkAndDisplayContent(rawContent, previousUserContent);
   let displayContent = normalizeGeneratedBreakTags(cleanDisplayContent);
@@ -2971,13 +2928,11 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
     ? undefined
     : {
         query: msgForPill.media?.query || msgForPill.webSearch?.query || "",
-        placement: msgForPill.media?.placement || "lead",
+        placement: "lead",
         images: candidateImages,
       };
   // Verified images appear first as soon as retrieval finishes.
   const responseMedia = candidateResponseMedia;
-  const mediaKey = responseMedia?.images.map((image) => image.url).join("|") || "";
-  const textRevealReady = !responseMedia || loadedMediaKey === mediaKey;
 
   displayContent = stripOrphanImageMarkdown(displayContent, Boolean(responseMedia));
   displayContent = stripTrailingSourcesSection(displayContent);
@@ -3094,29 +3049,6 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
       finalContent = "*(No response generated by the model)*";
     }
     segments.push({ type: "text", content: finalContent });
-  }
-
-  if (responseMedia?.placement === "lead") {
-    segments.unshift({ type: "media", content: "" });
-  } else if (responseMedia) {
-    const firstTextIndex = segments.findIndex((segment) => segment.type === "text" && segment.content.trim());
-    if (firstTextIndex < 0) {
-      segments.unshift({ type: "media", content: "" });
-    } else {
-      const firstText = segments[firstTextIndex];
-      const paragraphBreak = firstText.content.indexOf("\n\n");
-      if (paragraphBreak > 0) {
-        segments.splice(
-          firstTextIndex,
-          1,
-          { ...firstText, content: firstText.content.slice(0, paragraphBreak).trim() },
-          { type: "media", content: "" },
-          { ...firstText, content: firstText.content.slice(paragraphBreak).trim() },
-        );
-      } else {
-        segments.splice(firstTextIndex + 1, 0, { type: "media", content: "" });
-      }
-    }
   }
 
   // Only the final complete presentation block is allowed to create a card.
@@ -3439,13 +3371,15 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
   // 8. Fallback thought content using status logs if LLM didn't output <think>
   const uniqueStatusLogs = visibleProgressLogs(msgForPill.statusLogs);
   const fallbackThinkContent = (uniqueStatusLogs.length > 0 && msg.content && msg.content.trim())
-    ? uniqueStatusLogs.map((log: any) => `- ${log.action}${log.query ? ` (${log.query})` : ''}`).join('\n')
+    ? compactProgressTrace(uniqueStatusLogs).map(line => `- ${line}`).join('\n')
     : null;
-  const finalThinkContent = visibleThinkingText(thinkContent) || fallbackThinkContent;
+  const finalThinkContent = fallbackThinkContent || visibleThinkingText(thinkContent);
+  const latestMediaState = [...uniqueStatusLogs].reverse().find(log => log.kind === 'media')?.state;
+  const awaitingWebImages = Boolean(msg.isStreaming && ['searching', 'verifying'].includes(latestMediaState || ''));
 
   return (
     <>
-      {msg.isStreaming && (msg.responsePhase === 'thinking' || !displayContent.trim()) && (
+      {msg.isStreaming && (
         <DynamicLoader
           stage={msg.responsePhase || loadingStage}
           webSearchEnabled={isWebSearch}
@@ -3471,25 +3405,15 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
       ) : null}
 
       <div className="assistant-text-content w-full min-w-0 max-w-full space-y-4">
+        {(responseMedia || awaitingWebImages) && <WebSearchImageGrid
+          key="web-media"
+          images={responseMedia?.images}
+          query={responseMedia?.query}
+          pending={awaitingWebImages}
+          placement="lead"
+          onPreview={(image, imageIndex) => setPreviewAttachment?.({ url: image.displayUrl, name: image.title || `Web image ${imageIndex + 1}`, type: "image/jpeg" })}
+        />}
         {segments.map((seg, segIdx) => {
-          if (seg.type === "media" && responseMedia) {
-            return (
-              <WebSearchImageGrid
-                key={`media-${segIdx}`}
-                images={responseMedia.images}
-                query={responseMedia.query}
-                placement={responseMedia.placement}
-                onReady={() => setLoadedMediaKey(mediaKey)}
-                onPreview={(image, imageIndex) => {
-                  setPreviewAttachment?.({
-                    url: image.displayUrl,
-                    name: image.title || `Web image ${imageIndex + 1}`,
-                    type: "image/jpeg",
-                  });
-                }}
-              />
-            );
-          }
           if (seg.type === "image") {
             return (
               <GeneratedImageBlock userEmail={userEmail} 
@@ -3541,7 +3465,7 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
                 label={seg.writingType}
                 content={seg.content}
                 isStreaming={Boolean(msg.isStreaming && segIdx === segments.length - 1)}
-                revealEnabled={textRevealReady}
+                revealEnabled
                 animatePlayback={animateGeneratedText}
               />
             );
@@ -3622,7 +3546,7 @@ const AssistantMessageContent = React.memo(function AssistantMessageContent({
               content={cleanTextContent}
               markdownComponents={customMarkdownComponents}
               isStreaming={msg.isStreaming && isLastSegment}
-              revealEnabled={textRevealReady}
+              revealEnabled
               animatePlayback={animateGeneratedText}
             />
           );
@@ -4746,6 +4670,7 @@ export default function ChatInterface({
               try {
                 const data = JSON.parse(line.slice(6));
                 workspaceStreamEvent(data);
+                if (data.type === 'model_runtime' || data.type === 'model_route') currentLogs = [...currentLogs, progressLogForEvent(data)];
                 currentPhase = responsePhaseForEvent(data, currentPhase);
                 if (data.type === "effort") currentEffortInfo = data;
                 if (data.type === "effort_recovery") currentEffortRecovery = data.message;
@@ -4781,12 +4706,12 @@ export default function ChatInterface({
                 } else if (data.type === "model_runtime") {
                   fallbackModelName = data.uiName || fallbackModelName;
                 } else if (data.type === "agent_plan") {
-                  currentLogs = [...currentLogs, { action: "Planning the work", query: "" }];
+                  // Role activity is reported by the actual executing model.
                 } else if (data.type === "agent_status") {
                   const progress = visibleProgressLogs([progressLogForEvent(data)]);
                   currentLogs = [...currentLogs, ...progress.map((log) => ({ ...log, action: log.action || "Reviewing your request", query: log.query || "" }))];
                 } else if (data.type === "agent_result") {
-                  currentLogs = [...currentLogs, agentResultLog(data)];
+                  currentLogs = [...currentLogs, progressLogForEvent(data)];
                 } else if (data.type === "usage") {
                   if (data.usage?.prompt_tokens) {
                     setCurrentContextTokens(data.usage.prompt_tokens);
@@ -5609,6 +5534,7 @@ const handleRegenerate = async (index: number) => {
             try {
               const data = JSON.parse(line.slice(6));
               workspaceStreamEvent(data);
+              if (data.type === 'model_runtime' || data.type === 'model_route') currentLogs = [...currentLogs, progressLogForEvent(data)];
               currentPhase = responsePhaseForEvent(data, currentPhase);
               if (data.type === "effort") currentEffortInfo = data;
               if (data.type === "effort_recovery") currentEffortRecovery = data.message;
@@ -5642,12 +5568,12 @@ const handleRegenerate = async (index: number) => {
               } else if (data.type === "model_runtime") {
                 fallbackModelName = data.uiName || fallbackModelName;
               } else if (data.type === "agent_plan") {
-                currentLogs = [...currentLogs, { action: "Planning the work", query: "" }];
+                // Role activity is reported by the actual executing model.
               } else if (data.type === "agent_status") {
                 const progress = visibleProgressLogs([progressLogForEvent(data)]);
                 currentLogs = [...currentLogs, ...progress.map((log) => ({ ...log, action: log.action || "Reviewing your request", query: log.query || "" }))];
               } else if (data.type === "agent_result") {
-                currentLogs = [...currentLogs, agentResultLog(data)];
+                currentLogs = [...currentLogs, progressLogForEvent(data)];
               }
 
             } catch (e) {}
@@ -6530,6 +6456,7 @@ return (
                                       try {
                                         const data = JSON.parse(line.slice(6));
                                         workspaceStreamEvent(data);
+                                        if (data.type === 'model_runtime' || data.type === 'model_route') currentLogs = [...currentLogs, progressLogForEvent(data)];
                                         currentPhase = responsePhaseForEvent(data, currentPhase);
                                         if (data.type === "effort") currentEffortInfo = data;
                                         if (data.type === "effort_recovery") currentEffortRecovery = data.message;
@@ -6544,16 +6471,17 @@ return (
                                         else if (data.type === "searchIntent") currentSearchIntent = { webSearchIntent: data.webSearchIntent, webImageIntent: data.webImageIntent };
                                         else if (data.type === "text") streamingContent += data.content;
                                         else if (data.type === "reset") streamingContent = "";
+                                        else if (data.type === "error") streamingContent += `\n\n${data.error || 'The response could not be completed.'}`;
                                         else if (data.type === "model_fallback") fallbackModelName = data.uiName;
                                         else if (data.type === "model_runtime") {
                                           fallbackModelName = data.uiName || fallbackModelName;
                                         }
                                        else if (data.type === "agent_plan") {
-                                         currentLogs = [...currentLogs, { action: "Planning the work", query: "" }];
+                                         // Role activity is reported by the actual executing model.
                                        } else if (data.type === "agent_status") {
                                           const progress = visibleProgressLogs([progressLogForEvent(data)]);
                                           currentLogs = [...currentLogs, ...progress.map((log) => ({ ...log, action: log.action || "Reviewing your request", query: log.query || "" }))];
-                                        } else if (data.type === "agent_result") currentLogs = [...currentLogs, agentResultLog(data)];
+                                        } else if (data.type === "agent_result") currentLogs = [...currentLogs, progressLogForEvent(data)];
 
                                       } catch (e) {}
                                     }

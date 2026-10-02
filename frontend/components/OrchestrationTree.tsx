@@ -4,7 +4,7 @@ import { useRef, useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ArrowDown, ArrowUp, GripVertical, Loader2, MessageSquare, Plus, RefreshCw, X } from 'lucide-react';
-import type { ExecutionConfig, ExecutionRole } from '@void/shared/execution-config.mjs';
+import { suggestedRoleModel, type ExecutionConfig, type ExecutionRole } from '@void/shared/execution-config.mjs';
 import type { Connection, Model } from './ProviderSettings';
 import ProviderLogo from './ProviderLogo';
 import VoidSelect from './ui/VoidSelect';
@@ -72,7 +72,9 @@ export default function OrchestrationTree({ config, models, providers, onChange,
     if (!config.primaryModelId || config.roles.length >= 6) return;
     const kind = (['researcher', 'analyst', 'fact_checker'] as const).find(kind => !stages.some(role => role.kind === kind)) ?? 'researcher';
     const id = crypto.randomUUID();
-    onChange({ roles: [...stages, { id, kind, name: roles[kind], modelId: config.primaryModelId, instruction: '' }, ...(writer ? [writer] : [])] });
+    const available = models.filter(model => !['unavailable', 'rate_limited'].includes(model.runtime_status || ''));
+    const modelId = suggestedRoleModel(config, (available.length ? available : models).map(model => model.id)) || config.primaryModelId;
+    onChange({ roles: [...stages, { id, kind, name: roles[kind], modelId, instruction: '' }, ...(writer ? [writer] : [])] });
     setSelectedId(id);
   };
   const move = (offset: number) => {

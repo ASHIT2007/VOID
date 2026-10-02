@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultExecutionConfig, parseExecutionConfig, reconcileExecutionConfig } from '@void/shared/execution-config.mjs';
+import { defaultExecutionConfig, parseExecutionConfig, reconcileExecutionConfig, executionWithPrimary, suggestedRoleModel } from '@void/shared/execution-config.mjs';
 const primary = '11111111-1111-4111-8111-111111111111', second = '22222222-2222-4222-8222-222222222222';
 describe('saved execution contract', () => {
   it('places the answer writer last without changing specialist order', () => {
@@ -22,6 +22,25 @@ describe('saved execution contract', () => {
       { id: 'review', name: 'Security review', kind: 'custom', modelId: primary, instruction: 'Check the answer for security errors.' },
     ] };
     expect(parseExecutionConfig(config).roles).toHaveLength(2);
+  });
+  it('retains the specialist assignments when a device preference selects another primary', () => {
+    const config = parseExecutionConfig({ ...defaultExecutionConfig(primary), fallbackModelIds: [second], roles: [
+      { id: 'research', name: 'Researcher', kind: 'researcher', modelId: primary, instruction: '' },
+      { id: 'review', name: 'Security review', kind: 'custom', modelId: second, instruction: 'Check security.' },
+    ] });
+    expect(executionWithPrimary(config, second)).toEqual({ ...config, primaryModelId: second, fallbackModelIds: [] });
+    expect(config.primaryModelId).toBe(primary);
+    expect(config.fallbackModelIds).toEqual([second]);
+    expect(executionWithPrimary(undefined, second)).toBeUndefined();
+  });
+  it('assigns new roles to unused connected models before sharing an existing model', () => {
+    const third = '33333333-3333-4333-8333-333333333333';
+    const config = parseExecutionConfig({ ...defaultExecutionConfig(primary), roles: [
+      { id: 'research', name: 'Researcher', kind: 'researcher', modelId: second, instruction: '' },
+    ] });
+    expect(suggestedRoleModel(config, [primary, second, third])).toBe(third);
+    expect(suggestedRoleModel(defaultExecutionConfig(primary), [primary, second])).toBe(second);
+    expect(suggestedRoleModel(config, [primary])).toBe(primary);
   });
   it('keeps explicit fallback order and removes disconnected assignments', () => {
     const config = { ...defaultExecutionConfig(primary), fallbackModelIds: [second], roles: [{ id: 'research', name: 'Researcher', kind: 'researcher', modelId: second, instruction: '' }] };

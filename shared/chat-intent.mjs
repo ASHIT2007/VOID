@@ -1,4 +1,29 @@
 import { presentationDelivery } from './file-intent.mjs';
+
+// Correct only image-command vocabulary for classification; retain the user's
+// original subject, names, and requested visible text in the generation prompt.
+function editDistance(left, right) {
+  const rows = Array.from({ length: left.length + 1 }, (_, i) => [i]);
+  rows[0] = Array.from({ length: right.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= left.length; i++) for (let j = 1; j <= right.length; j++) {
+    rows[i][j] = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1));
+    if (i > 1 && j > 1 && left[i - 1] === right[j - 2] && left[i - 2] === right[j - 1]) rows[i][j] = Math.min(rows[i][j], rows[i - 2][j - 2] + 1);
+  }
+  return rows[left.length][right.length];
+}
+const imageVocabulary = ['generate', 'create', 'make', 'design', 'draw', 'render', 'paint', 'illustrate', 'image', 'images', 'picture', 'pictures', 'photo', 'photos', 'illustration', 'artwork', 'wallpaper', 'logo', 'portrait', 'icon', 'icons', 'scene', 'scenes'];
+export function normalizeImageIntent(message) {
+  return String(message || '').replace(/\b[a-z]+\b/gi, word => {
+    const token = word.toLowerCase();
+    if (token === 'img' || token === 'imgs') return token === 'img' ? 'image' : 'images';
+    if (token === 'pic' || token === 'pics') return token === 'pic' ? 'picture' : 'pictures';
+    if (['general', 'generative', 'generator', 'generated', 'imagery'].includes(token)) return word;
+    if (token.length < 4 || token.length > 15 || imageVocabulary.includes(token)) return word;
+    const candidates = imageVocabulary.map(candidate => ({ candidate, distance: Math.abs(candidate.length - token.length) > 2 ? 3 : editDistance(token, candidate) }))
+      .filter(({ candidate, distance }) => distance <= (candidate.length >= 7 ? 2 : 1)).sort((a, b) => a.distance - b.distance);
+    return candidates.length && (candidates.length === 1 || candidates[0].distance < candidates[1].distance || candidates[0].candidate.replace(/s$/, '') === candidates[1].candidate.replace(/s$/, '')) ? candidates[0].candidate : word;
+  });
+}
 // Classify the user's requested operation, never appended capability instructions.
 export function isDiagramRequest(message) {
   const text = String(message || '').split('[SYSTEM DIRECTIVE:')[0];

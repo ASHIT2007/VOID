@@ -126,7 +126,7 @@ function buildGenerationPrompt(prompt: string, model: unknown, allowsPeople: boo
   const transparencyInstruction = forceTransparent || requestsTransparentBackground(prompt)
     ? 'Isolate the requested subject against a perfectly uniform pure white background with no shadows, texture, border, or surrounding objects so the background can be removed cleanly.'
     : '';
-  return `Create a PG-rated professional image. ${transparencyInstruction} Request: ${prompt}. ${subjectGuard} ${styleInstruction(model, prompt)}`
+  return `Create a PG-rated professional image. Interpret obvious subject misspellings; preserve requested lettering verbatim. ${transparencyInstruction} Request: ${prompt}. ${subjectGuard} ${styleInstruction(model, prompt)}`
     .replace(/\s+/g, ' ')
     .trim()
     .substring(0, 560);
@@ -862,6 +862,7 @@ export async function POST(req: Request) {
           if (!connection) continue;
           try {
             const apiKey = openKey(connection);
+            const generationBrief = `${requestedPrompt.slice(0, 1600)}\nInterpret obvious typos in the requested subject and image command. Preserve names when ambiguous and any explicitly requested or quoted lettering verbatim.`;
             let generated: GeneratedImage;
             if (candidate.provider_id === 'openai') {
               const form = sourceMatch ? new FormData() : null;
@@ -871,7 +872,7 @@ export async function POST(req: Request) {
               }
               const response = await fetch(`https://api.openai.com/v1/images/${form ? 'edits' : 'generations'}`, { method: 'POST',
                 headers: { ...(!form ? { 'Content-Type': 'application/json' } : {}), Authorization: `Bearer ${apiKey}` },
-                body: form || JSON.stringify({ model: candidate.model_id, prompt: requestedPrompt.slice(0, 1800), n: 1, size: requestedSize }),
+                body: form || JSON.stringify({ model: candidate.model_id, prompt: generationBrief, n: 1, size: requestedSize }),
                 signal: AbortSignal.any([req.signal, AbortSignal.timeout(90_000)]) });
               if (!response.ok) {
                 recordProviderFailure(connection.id, response.status);
@@ -884,7 +885,7 @@ export async function POST(req: Request) {
               const ai = new GoogleGenAI({ apiKey });
               const input = sourceMatch ? [{ type: 'text' as const, text: requestedPrompt.slice(0, 3000) },
                 { type: 'image' as const, data: sourceMatch[2], mime_type: sourceMatch[1] as 'image/png' | 'image/jpeg' | 'image/webp' }]
-                : requestedPrompt.slice(0, 3000);
+                : generationBrief;
               const response = await ai.interactions.create({ model: candidate.model_id, input,
                 response_modalities: ['image'], response_format: { type: 'image', aspect_ratio: requestedSize === '1024x1536' ? '2:3' : requestedSize === '1536x1024' ? '3:2' : '1:1', image_size: '1K' } }, { signal: AbortSignal.any([req.signal, AbortSignal.timeout(90_000)]) });
               if (!response.output_image?.data) continue;

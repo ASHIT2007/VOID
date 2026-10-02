@@ -1,5 +1,5 @@
 import 'server-only';
-import { EXECUTION_METADATA_KEY, reconcileExecutionConfig, type ExecutionConfig } from '@void/shared/execution-config.mjs';
+import { EXECUTION_METADATA_KEY, parseExecutionConfig, reconcileExecutionConfig, type ExecutionConfig } from '@void/shared/execution-config.mjs';
 import { serviceDb } from './server';
 
 export async function executionMetadata(userId: string): Promise<Record<string, unknown>> {
@@ -22,5 +22,12 @@ export async function connectedExecutionModels(userId: string) {
 }
 
 export async function readExecutionConfig(userId: string, eligibleIds: string[], preferredId?: string | null): Promise<ExecutionConfig> {
-  return reconcileExecutionConfig((await executionMetadata(userId))[EXECUTION_METADATA_KEY], eligibleIds, preferredId);
+  const saved = (await executionMetadata(userId))[EXECUTION_METADATA_KEY];
+  try {
+    const config = parseExecutionConfig(saved);
+    // Routing must report an unavailable assignment or use its explicit backup.
+    // Removing it here can silently turn an entire team into a primary-only run.
+    if (config.primaryModelId) return config;
+  } catch { /* Legacy or missing settings use the connected-model default. */ }
+  return reconcileExecutionConfig(saved, eligibleIds, preferredId);
 }

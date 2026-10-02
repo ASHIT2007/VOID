@@ -3,5 +3,7 @@ export type ExecutionConfig = { version: 1; primaryModelId: string | null; roles
 export const EXECUTION_METADATA_KEY: string;
 export const ROLE_KINDS: ExecutionRole['kind'][];
 export function defaultExecutionConfig(primaryModelId?: string | null): ExecutionConfig;
+export function executionWithPrimary(config: ExecutionConfig | undefined, primaryModelId: string): ExecutionConfig | undefined;
+export function suggestedRoleModel(config: ExecutionConfig, eligibleIds: string[]): string | null;
 export function parseExecutionConfig(value: unknown): ExecutionConfig;
 export function reconcileExecutionConfig(value: unknown, eligibleIds: string[], preferredId?: string | null): ExecutionConfig;

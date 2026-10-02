@@ -20,7 +20,7 @@ import { isDiagramRequest, isStudyRoadmapRequest, workspaceInspectionTools } fro
 import { extractToolProtocol, requestsToolExample } from '@void/shared/tool-protocol.mjs';
 import { presentationDelivery, requestedFileTools, fileGenerationDirective } from '@void/shared/file-intent.mjs';
 import { loadVoiceConfig } from '@/lib/ai/voice-server';
-import type { ExecutionConfig } from '@void/shared/execution-config.mjs';
+import { executionWithPrimary, type ExecutionConfig } from '@void/shared/execution-config.mjs';
 
 type AgentStreamEvent = {
   type: string;
@@ -44,6 +44,7 @@ type AgentStreamEvent = {
   error?: string;
   uiName?: string;
   modelId?: string;
+  connectedModelId?: string;
   platform?: string;
   attempt?: number;
   reason?: string;
@@ -54,6 +55,10 @@ type AgentStreamEvent = {
   role?: string;
   status?: string;
   label?: string;
+  roleLabel?: string;
+  state?: string;
+  fromModel?: string;
+  toModel?: string;
   summary?: string;
   confidence?: number;
   findingCount?: number;
@@ -130,7 +135,7 @@ export async function POST(req: NextRequest) {
           const selected = byok.models.find(candidate => candidate.id === body.routingOverride && candidate.enabled && (candidate.capabilities as { text?: boolean }).text);
           if (!selected) { sendEvent({ type: 'error', error: 'The device routing preference is no longer available. Clear it in Workspace → Usage or choose an enabled connected text model.' }); controller.close(); return; }
           byok.mode = 'MANUAL'; byok.manualModelId = String(selected.id);
-          byok.execution = undefined;
+          byok.execution = executionWithPrimary(byok.execution, String(selected.id));
         }
         
         const rawLatestMessage = messages[messages.length - 1]?.content || "";
@@ -234,6 +239,9 @@ export async function POST(req: NextRequest) {
         let accumulatedText = "";
         let rawAnswer = '';
         let writingStarted = false;
+        let activeExecution: Record<string, unknown> = {};
+        const executionFields = (data: AgentStreamEvent) => ({ agentId: data.agentId, role: data.role, roleLabel: data.roleLabel,
+          uiName: data.uiName, modelId: data.modelId, connectedModelId: data.connectedModelId, platform: data.platform });
         const protocolOptions = { preserveExamples: requestsToolExample(latestMessage) };
         const publishAnswer = (raw: string, final = false) => {
           rawAnswer = raw;
@@ -247,7 +255,7 @@ export async function POST(req: NextRequest) {
           if (addition && !writingStarted) {
             writingStarted = true;
             sendEvent({ type: 'phase', phase: 'generating' });
-            sendEvent({ type: 'status', action: presentationRequest ? 'Building your presentation' : chartRequest ? 'Building your chart' : 'Writing your answer', query: '' });
+            sendEvent({ ...activeExecution, type: 'status', action: presentationRequest ? 'Building your presentation' : chartRequest ? 'Building your chart' : 'Writing your answer', query: progressTarget(latestMessage) });
           }
           if (addition && !bufferedArtifactRequest) sendEvent({ type: 'text', content: addition });
         };
@@ -311,7 +319,7 @@ export async function POST(req: NextRequest) {
                 sendEvent({ type: 'phase', phase: 'thinking' });
                 const tool = { name: data.name || '', args: data.args || {} };
                 if (data.callId) activeTools.set(data.callId, tool);
-                sendEvent({ type: 'status', ...toolProgress(tool.name, tool.args) });
+                sendEvent({ ...executionFields(data), type: 'status', ...toolProgress(tool.name, tool.args) });
               }
               else if (data.type === 'tool_result') {
                 sendEvent({ type: 'phase', phase: 'thinking' });
@@ -319,21 +327,23 @@ export async function POST(req: NextRequest) {
                 if (tool) {
                   if (fileTools.includes(tool.name) && !data.error) workspacePresentationBrief += `${workspacePresentationBrief ? '\n\n' : ''}${String(data.content || '').slice(0, 3000)}`;
                   const progress = toolProgress(tool.name, tool.args, true);
-                  sendEvent({ type: 'status', ...progress, ...(data.error ? { action: 'Reviewing an operation error' } : {}) });
+                  sendEvent({ ...executionFields(data), type: 'status', ...progress, ...(data.error ? { action: 'Reviewing an operation error' } : {}) });
                   activeTools.delete(data.callId!);
                 }
               }
               else if (data.type === 'progress') {
                 writingStarted = false;
                 sendEvent({ type: 'phase', phase: 'thinking' });
-                sendEvent({ type: 'status', action: data.action, query: progressTarget(data.query), kind: 'task', state: 'active' });
+                sendEvent({ ...executionFields(data), type: 'status', action: data.action, query: progressTarget(data.query || data.target || latestMessage), kind: 'task', state: 'active' });
               }
               else if (data.type === 'sources') {
                 collectSources((data.sources || []).map(source => source.url));
                 sendEvent({ type: 'sources', sources: (data.sources || []).map((source) => source.url) });
               }
               else if (data.type === 'webSearch') {
-                sendEvent({ type: 'webSearch', query: data.query, results: data.results, images: isVoice ? [] : data.images });
+                // Ordinary chat displays the verified media batch, rather than
+                // mounting raw search thumbnails and replacing them later.
+                sendEvent({ type: 'webSearch', query: data.query, results: data.results, images: isVoice || !visualArtifactRequest ? [] : data.images });
                 // Treat the search result payload itself as source evidence.
                 // Some providers emit webSearch without a separate sources
                 // event; normal chat must still render its Sources pill.
@@ -346,24 +356,32 @@ export async function POST(req: NextRequest) {
                 }
               }
               else if (data.type === 'model_fallback') {
-                fallbackCount += 1;
                 sendEvent({ type: 'model_fallback', uiName: data.uiName });
               }
               else if (data.type === 'model_runtime') {
-                if (byok && (!selectedModel || data.isSynthesizer)) {
-                  const chosen = byok.models.find(item => item.modelId === data.modelId && item.providerId === data.platform);
+                activeExecution = executionFields(data);
+                if (data.reason === 'fallback') fallbackCount += 1;
+                if (byok && (!selectedModel || data.isSynthesizer || data.role === 'primary')) {
+                  const chosen = byok.models.find(item => data.connectedModelId ? item.id === data.connectedModelId : item.modelId === data.modelId && item.providerId === data.platform);
                   if (chosen) selectedModel = { id: String(chosen.id), providerId: String(chosen.providerId) };
                 }
                 sendEvent({
                   type: 'model_runtime',
                   uiName: data.uiName,
                   modelId: data.modelId,
+                  connectedModelId: data.connectedModelId,
                   platform: data.platform,
                   attempt: data.attempt,
                   reason: data.reason,
                   agentId: data.agentId,
                   isSynthesizer: data.isSynthesizer,
+                  role: data.role,
+                  roleLabel: data.roleLabel,
+                  target: progressTarget(data.target || latestMessage),
                 });
+              }
+              else if (data.type === 'model_route') {
+                sendEvent({ ...executionFields(data), type: 'model_route', state: data.state, fromModel: data.fromModel, toModel: data.toModel, message: data.message });
               }
               else if (data.type === 'agent_plan') {
                 sendEvent({ type: 'agent_plan', intent: data.intent, agents: data.agents });
@@ -373,11 +391,12 @@ export async function POST(req: NextRequest) {
                   writingStarted = false;
                   sendEvent({ type: 'phase', phase: 'thinking' });
                 }
-                sendEvent({ type: 'agent_status', agentId: data.agentId, role: data.role, status: data.status, label: data.label, operation: data.operation, target: progressTarget(data.target) });
+                sendEvent({ ...executionFields(data), type: 'agent_status', status: data.status, label: data.label, operation: data.operation, target: progressTarget(data.target || (data.status === 'started' ? latestMessage : '')) });
               }
               else if (data.type === 'agent_result') {
                 sendEvent({
                   type: 'agent_result',
+                  ...executionFields(data),
                   agentId: data.agentId,
                   role: data.role,
                   label: data.label,

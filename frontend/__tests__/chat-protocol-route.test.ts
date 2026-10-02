@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-const mocks = vi.hoisted(() => ({ fetch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ fetch: vi.fn(), load: vi.fn() }));
 vi.mock('@/lib/deployment-access', () => ({ requireDeploymentAccess: () => null }));
 vi.mock('@/lib/reliability', () => ({ fetchWithRetry: mocks.fetch, publicServiceError: () => 'The answer did not finish. Please retry.' }));
-vi.mock('@/lib/ai/server', () => ({ authenticatedUser: async () => 'user-a', loadByokContext: async () => ({ userId: 'user-a', mode: 'AUTO', models: [{ enabled: true, capabilities: { text: true } }] }), serviceDb: vi.fn() }));
+vi.mock('@/lib/ai/server', () => ({ authenticatedUser: async () => 'user-a', loadByokContext: mocks.load, serviceDb: vi.fn() }));
 import { POST } from '@/app/api/chat/route';
 const call = '```json\n{"type":"web_search","query":"Satoru Gojo Jujutsu Kaisen character overview"}\n```';
 const request = (prompt: string) => new NextRequest('http://localhost/api/chat', { method: 'POST', body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], model: 'Auto' }) });
@@ -15,9 +15,24 @@ const fixture = (text: string, final = text) => {
   } }), { headers: { 'Content-Type': 'text/event-stream' } });
 };
 const events = (text: string) => text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)) as { type: string; content?: string; error?: string });
-beforeEach(() => { vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'test-service'); });
+beforeEach(() => { vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'test-service'); mocks.load.mockResolvedValue({ userId: 'user-a', mode: 'AUTO', models: [{ enabled: true, capabilities: { text: true } }] }); });
 afterEach(() => vi.unstubAllEnvs());
 describe('last boundary before user-visible SSE', () => {
+  it('forwards the full orchestration team despite a device primary preference', async () => {
+    const primary = '11111111-1111-4111-8111-111111111111', selected = '22222222-2222-4222-8222-222222222222';
+    const roles = [{ id: 'researcher', name: 'Researcher', kind: 'researcher', modelId: primary, instruction: '' },
+      { id: 'writer', name: 'Answer writer', kind: 'answer_writer', modelId: selected, instruction: '' }];
+    mocks.load.mockResolvedValue({ userId: 'user-a', mode: 'AUTO', execution: { version: 1, primaryModelId: primary, roles, fallbackModelIds: [selected] },
+      models: [primary, selected].map(id => ({ id, enabled: true, capabilities: { text: true, streaming: true } })) });
+    mocks.fetch.mockResolvedValue(fixture('The team completed this answer.'));
+    const response = await POST(new NextRequest('http://localhost/api/chat', { method: 'POST', body: JSON.stringify({
+      messages: [{ role: 'user', content: 'Compare telescope designs' }], model: 'Auto', routingOverride: selected,
+    }) }));
+    await response.text();
+    const forwarded = JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body).byok;
+    expect(forwarded.execution).toEqual({ version: 1, primaryModelId: selected, roles, fallbackModelIds: [] });
+    expect(forwarded.manualModelId).toBe(selected);
+  });
   it.each(['genrate a ppt about solar energy', 'Create a presentation about solar energy', 'Make a PowerPoint about solar energy and show a preview'])('sends %s through the presentation skill and preserves the preview', async prompt => {
     const preview = '```gamma-presentation\n' + JSON.stringify({ title: 'Solar energy', format: 'presentation', theme: 'academic-clean', slides: [
       { id: 'cover', slideNumber: 1, layout: 'full-bleed', title: 'Solar energy', content: {} },

@@ -1,6 +1,7 @@
 import { registerTool, getAllTools, getAllToolSchemas, type ToolResult } from './tool-registry.js';
 import type { ChatToolDefinition } from '@void/shared/types.js';
 import { requestedFileTools } from '@void/shared/file-intent.mjs';
+import { normalizeImageIntent } from '@void/shared/chat-intent.mjs';
 
 /** Register meta/orchestration tools. */
 export function registerOrchestrationTools(): void {
@@ -53,7 +54,7 @@ export function getRelevantToolSchemas(
   maxTools: number = 15,
   options: { webSearch?: boolean; forceWebSearch?: boolean } = {},
 ): ChatToolDefinition[] {
-  const msg = message.toLowerCase();
+  const msg = normalizeImageIntent(message).toLowerCase();
   const allSchemas = getAllToolSchemas();
   const relevantNames = new Set<string>();
   const fileTools = requestedFileTools(message);

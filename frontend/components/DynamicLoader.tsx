@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { progressLabel, type ProgressLog } from "../lib/chat-progress";
+import { compactProgressLabel, type ProgressLog } from "../lib/chat-progress";
 
 export type TaskBucket = "text-gen" | "web-search" | "image-gen";
 
@@ -52,7 +52,6 @@ function DelayAwareLabel({ label }: { label: string }) {
   const [isStalled, setIsStalled] = useState(false);
 
   useEffect(() => {
-    setIsStalled(false);
     const timer = window.setTimeout(() => {
       setIsStalled(true);
     }, STALL_AFTER_MS);
@@ -60,7 +59,7 @@ function DelayAwareLabel({ label }: { label: string }) {
   }, [label]);
 
   const currentLabel = isStalled
-    ? `${label} (taking longer than usual)`
+    ? `${label} · Still working`
     : label;
 
   return (
@@ -101,7 +100,7 @@ export function DynamicLoader({
 }: DynamicLoaderProps) {
   const signature = logSignature(statusLogs);
   const baseLabel = useMemo(
-    () => customGerund?.trim() || progressLabel({ stage, prompt, logs: statusLogs, isGeneratingImage }),
+    () => customGerund?.trim() || compactProgressLabel({ stage, prompt, logs: statusLogs, isGeneratingImage }),
     [customGerund, isGeneratingImage, prompt, statusLogs, stage],
   );
   return (
@@ -114,7 +113,7 @@ export function DynamicLoader({
     >
       <div className="inline-flex max-w-full items-start gap-2.5 py-1">
         <ProgressMark />
-        <DelayAwareLabel key={`${signature}|${stage}|${isGeneratingImage}`} label={baseLabel} />
+        <DelayAwareLabel key={`${signature}|${stage}|${isGeneratingImage}|${baseLabel}`} label={baseLabel} />
       </div>
     </motion.div>
   );
